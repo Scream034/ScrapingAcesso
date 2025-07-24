@@ -10,14 +10,18 @@ public static class Constants
     {
         public static class File
         {
+            public static readonly string Settings = IOPath.Combine(Folder.App, Name.File.Settings);
             public static readonly string Log = IOPath.Combine(Folder.Log, Name.File.Log);
             public static readonly string PlaywrightPS1 = Name.File.PlaywrightPS1;
         }
 
         public static class Folder
         {
-            public const string App = $"{AppName}";
-            public static readonly string Log = Name.Folder.Log;
+            /// <summary>
+            /// Path to the application directory.
+            /// </summary>
+            public static readonly string App = IOPath.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) ?? string.Empty;
+            public static readonly string Log = IOPath.Combine(App, Name.Folder.Log);
             public static readonly string Products = IOPath.Combine(App, Name.Folder.Products);
         }
 
@@ -25,6 +29,7 @@ public static class Constants
         {
             public static class File
             {
+                public static readonly string Settings = "settings.json";
                 public static readonly string Log = generateLogFileName();
                 public static readonly string PlaywrightPS1 = "playwright.ps1";
                 public static readonly string ProductData = "data.json";
@@ -44,6 +49,7 @@ public static class Constants
     /// </summary>
     public static class Contexts
     {
+        public const string Editor = "Ed";
         public const string CatalogParser = "CP";
         public const string ProductParser = "PP";
     }
@@ -62,7 +68,7 @@ public static class Constants
     /// </summary>
     public static void EnsureDirectoriesExist()
     {
-        string[] directories = { Path.Folder.Log };
+        string[] directories = { Path.Folder.Log, Path.Folder.Products };
         foreach (var directory in directories)
         {
             if (!Directory.Exists(directory))

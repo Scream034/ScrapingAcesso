@@ -1,178 +1,96 @@
 namespace ScraperAcesso;
 
-using Microsoft.Playwright;
-
-using ScraperAcesso.Sites;
 using ScraperAcesso.Sites.Authorization;
 using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Components.Menu;
-using ScraperAcesso.Product.Parsers.Stem;
-using ScraperAcesso.Product.Stem;
+using ScraperAcesso.Components.Settings;
 
 public static class Program
 {
-    public static ConsoleMenuManager MenuManager = new("Main Menu");
+    public static readonly ConsoleMenuManager MenuManager = new("Main Menu");
 
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         Constants.EnsureDirectoriesExist();
         Log.Initialize();
+        Log.Print($"Starting {Constants.AppName} v1.0...");
 
-        Log.Print($"Starting {Constants.AppName}...");
-
-        Console.CancelKeyPress += (sender, eventArgs) =>
+        // Настройка корректного завершения
+        Console.CancelKeyPress += (_, eventArgs) =>
         {
-            Log.Warning("Ctrl+C pressed. Cleaning up resources before exit...");
-            eventArgs.Cancel = true; // Отменяем принудительное завершение, чтобы дать Dispose отработать
+            Log.Warning("Ctrl+C pressed. Disposing resources...");
+            eventArgs.Cancel = true;
             Log.Dispose();
-            Environment.Exit(0); // Завершаем программу после очистки
+            Environment.Exit(0);
         };
-
-        HandleMain(args).Wait();
+        
+        await HandleMain(args);
     }
 
     public static async Task HandleMain(string[] args)
     {
-        Log.Print("Initializing Playwright...");
+        // 1. Инициализация ключевых сервисов
+        Log.Print("Initializing services...");
+        var settingsManager = new SettingsManager();
+        settingsManager.Load();
 
-        // Инициализация Playwright и создание браузера
         await using var scraper = await ChromiumScraper.CreateAsync();
-        var catalogContext = await scraper.CreateContextAsync(Constants.Contexts.CatalogParser);
-        var productContext = await scraper.CreateContextAsync(Constants.Contexts.ProductParser);
-        Log.Print($"Contexts created: {Constants.Contexts.CatalogParser}, {Constants.Contexts.ProductParser}");
+        var appActions = new AppActions(scraper, settingsManager);
+        
+        // 2. Настройка контекстов
+        await ConfigureBrowserContexts(scraper);
 
-        // Установливаем для контекста каталога только запросы типа "document"
-        await catalogContext.RouteAsync("**/*", static route =>
-        {
-            if (route.Request.ResourceType != "document")
-            {
-                route.AbortAsync();
-            }
-            else
-            {
-                route.ContinueAsync();
-            }
-        });
-
-        // Устанавливаем для контекста продукта только запросы типа "document" и "image"
-        await productContext.RouteAsync("**/*", static route =>
-        {
-            if (route.Request.ResourceType != "document" && route.Request.ResourceType != "image")
-            {
-                route.AbortAsync();
-            }
-            else
-            {
-                route.ContinueAsync();
-            }
-        });
-
-        Log.Print("Playwright initialized successfully.");
-
-        // Инициализация менеджера меню
-        await InitializeMenuAsync(scraper);
-    }
-
-    private static async Task InitializeMenuAsync(ChromiumScraper scraper)
-    {
-        Log.Print("Initializing menu...");
-
-        CreateScraperMenu(scraper);
-
-        MenuManager.AddAction("Authorize", async () => await authorizeAsync(scraper));
-        MenuManager.SetExitOption("Exit");
-
-        Log.Print("Menu initialized successfully.");
-
-        // --- 4. Запуск цикла меню ---
+        // 3. Создание и запуск меню
+        InitializeMenu(appActions);
         await MenuManager.RunAsync();
 
         Log.Print("Menu loop finished. Exiting application.");
     }
-
-    private static ConsoleMenuManager CreateScraperMenu(ChromiumScraper scraper)
+    
+    private static void InitializeMenu(AppActions actions)
     {
-        Log.Print("Creating Scraper Menu...");
+        Log.Print("Initializing menu...");
+
         var scraperMenu = MenuManager.AddSubMenu("Scraper Menu");
-        scraperMenu.AddAction("Parse Stem Products", async () => await parseStemProductsAsync(scraper));
+        scraperMenu.AddAction("Parse Stem Products", actions.ParseStemProductsAsync);
 
-        Log.Print("Scraper Menu created successfully.");
-        return scraperMenu;
+        MenuManager.AddAction("Authorize", actions.PerformAuthorizationAsync);
+        MenuManager.SetExitOption("Exit");
+
+        Log.Print("Menu initialized successfully.");
     }
 
-    #region Actions
-
-    private static async Task authorizeAsync(ChromiumScraper scraper)
+    private static async Task ConfigureBrowserContexts(ChromiumScraper scraper)
     {
-        Log.Print("Starting authorization...");
-
-        Log.Print("Please enter the URL for authorization (or press Enter to use default):");
-        string? url = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(url))
+        Log.Print("Configuring browser contexts...");
+        
+        // Контекст для навигации (только HTML)
+        var catalogContext = await scraper.CreateContextAsync(Constants.Contexts.CatalogParser);
+        await catalogContext.RouteAsync("**/*", static route =>
         {
-            Log.Print("Using default URL for authorization.");
-            url = "https://accounts.nethouse.ru/auth/realms/nethouse/protocol/openid-connect/auth?client_id=nethouse-constructor&kc_idp_hint=&login_hint=&redirect_uri=https%3A%2F%2Fnethouse.ru%2Fnew-auth%2F%2Fhandle_redirect%2FeyJyZWRpcmVjdF91cmkiOiIvY29uc3RydWN0b3Ivc2lnbmluIiwiaW5faWZyYW1lIjpmYWxzZX0&response_type=code&scope=openid+profile+email&state=state";
-        }
+            if (route.Request.ResourceType is not "document") route.AbortAsync();
+            else route.ContinueAsync();
+        });
 
-        Log.Print("Please enter your username:");
-        string? username = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(username))
+        // Контекст для продуктов (HTML и картинки)
+        var productContext = await scraper.CreateContextAsync(Constants.Contexts.ProductParser);
+        await productContext.RouteAsync("**/*", static route =>
         {
-            Log.Print("Using default username: comlevalyubov@yandex.ru");
-            username = "comlevalyubov@yandex.ru";
-        }
+            var type = route.Request.ResourceType;
+            if (type is not "document" and not "image") route.AbortAsync();
+            else route.ContinueAsync();
+        });
 
-        Log.Print("Please enter your password:");
-        string? password = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(password))
+        // Контекст для редактора (HTML и картинки)
+        var editorContext = await scraper.CreateContextAsync(Constants.Contexts.Editor);
+        await editorContext.RouteAsync("**/*", static route =>
         {
-            Log.Print("Using default password: NJ2139dhwds");
-            password = "NJ2139dhwds";
-        }
+            var type = route.Request.ResourceType;
+            if (type is not "document" and not "image" and not "script" and not "xhr") route.AbortAsync();
+            else route.ContinueAsync();
+        });
 
-        Authorization authorization = new(url, new(username, password));
-        Log.Print($"Authorization created with URL: {authorization.URL}");
-
-        await authorization.ParseAsync(scraper);
-        Log.Print("Authorization completed successfully.");
-
-        // Закрытие страницы после завершения
-        authorization.Dispose();
+        Log.Print("Contexts configured successfully.");
     }
-
-    private static async Task parseStemProductsAsync(ChromiumScraper scraper)
-    {
-        Log.Print("Write catalog URL (or press Enter to exit):");
-        string? url = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            Log.Print("No URL provided. Exiting...");
-            return;
-        }
-
-        Log.Print("Starting Stem products parsing...");
-
-        // Создаем экземпляр парсера с фабрикой для создания WebStemProduct
-        var stemCatalogParser = new StemCatalogParser(
-            url,
-            url => new WebStemProduct(url)
-        );
-
-        Log.Print($"Parsing products from URL: {stemCatalogParser.URL}");
-
-        var products = await stemCatalogParser.ParseAsync(scraper);
-        if (products.Count == 0)
-        {
-            Log.Error("No products found during parsing.");
-        }
-        else
-        {
-            Log.Print($"Successfully parsed {products.Count} products.");
-        }
-
-        Log.Print("Stem products parsing completed.");
-    }
-
-    #endregion
 }
