@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ScrapingAcesso", "ScrapingAcesso.csproj", "{37521848-D306-83E7-B1E5-419127E3E366}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{37521848-D306-83E7-B1E5-419127E3E366}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{37521848-D306-83E7-B1E5-419127E3E366}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{37521848-D306-83E7-B1E5-419127E3E366}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{37521848-D306-83E7-B1E5-419127E3E366}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {FE7BB6A6-326F-4B9D-868F-F63E5EA9B54A}
+	EndGlobalSection
+EndGlobal

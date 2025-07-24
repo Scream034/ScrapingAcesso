@@ -1,0 +1,16 @@
+# Ignore Visual Studio Code files
+.vscode/settings.json
+
+# Ignore build output directories
+bin/
+obj/
+
+# Ignore NuGet packages
+*.nupkg
+
+# Ignore logs
+logs/
+*.log
+
+# Ignore temporary files
+*.tmp
