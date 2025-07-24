@@ -1,64 +1,87 @@
+namespace ScraperAcesso.Utils;
+
 using System.Text;
-using System.Text.RegularExpressions;
 
-namespace ScraperAcesso.Utils
+/// <summary>
+/// Предоставляет высокопроизводительный метод для транслитерации строк
+/// в формат, безопасный для URL и файловой системы.
+/// </summary>
+public static class Transliterator
 {
-    public static partial class Transliterator
-    {
-        // Используем частичный класс и сгенерированный Regex для производительности
-        [GeneratedRegex(@"\s+")]
-        private static partial Regex WhiteSpaceRegex();
-
-        [GeneratedRegex(@"[^\w\-\.]")]
-        private static partial Regex UnsafeCharsRegex();
-        
-        private static readonly Dictionary<char, string> TranslitMap = new()
+    // Словарь для транслитерации. Определен как readonly для потокобезопасности при чтении.
+    // Добавлены цифры и основные символы для сохранения в итоговой строке.
+    private static readonly Dictionary<char, string> TranslitMap = new()
         {
             {'а', "a"}, {'б', "b"}, {'в', "v"}, {'г', "g"}, {'д', "d"}, {'е', "e"}, {'ё', "yo"},
             {'ж', "zh"}, {'з', "z"}, {'и', "i"}, {'й', "y"}, {'к', "k"}, {'л', "l"}, {'м', "m"},
             {'н', "n"}, {'о', "o"}, {'п', "p"}, {'р', "r"}, {'с', "s"}, {'т', "t"}, {'у', "u"},
             {'ф', "f"}, {'х', "h"}, {'ц', "c"}, {'ч', "ch"}, {'ш', "sh"}, {'щ', "sch"},
             {'ъ', ""}, {'ы', "y"}, {'ь', ""}, {'э', "e"}, {'ю', "yu"}, {'я', "ya"},
-            // Дополнительные символы, если нужно
-            {' ', "-"}, {'&', "and"}
+            // --- Безопасные символы, которые нужно сохранить ---
+            {' ', "-"}, {'-', "-"}, {'&', "and"},
+            {'0', "0"}, {'1', "1"}, {'2', "2"}, {'3', "3"}, {'4', "4"},
+            {'5', "5"}, {'6', "6"}, {'7', "7"}, {'8', "8"}, {'9', "9"},
+            // Добавим латиницу, чтобы она также сохранялась, если вдруг попадется
+            {'a', "a"}, {'b', "b"}, {'c', "c"}, {'d', "d"}, {'e', "e"}, {'f', "f"},
+            {'g', "g"}, {'h', "h"}, {'i', "i"}, {'j', "j"}, {'k', "k"}, {'l', "l"},
+            {'m', "m"}, {'n', "n"}, {'o', "o"}, {'p', "p"}, {'q', "q"}, {'r', "r"},
+            {'s', "s"}, {'t', "t"}, {'u', "u"}, {'v', "v"}, {'w', "w"}, {'x', "x"},
+            {'y', "y"}, {'z', "z"}
         };
 
-        /// <summary>
-        /// Converts a Cyrillic string to a URL- and filesystem-safe ASCII string.
-        /// </summary>
-        /// <param name="cyrillicText">The text to transliterate.</param>
-        /// <returns>A safe ASCII string.</returns>
-        public static string ToSafeId(string cyrillicText)
+    /// <summary>
+    /// Преобразует строку в безопасный для URL и файловой системы идентификатор.
+    /// Выполняет все операции за один проход для максимальной производительности.
+    /// </summary>
+    /// <param name="text">Текст для транслитерации.</param>
+    /// <returns>Безопасная ASCII строка.</returns>
+    public static string ToSafeId(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
         {
-            if (string.IsNullOrWhiteSpace(cyrillicText))
-            {
-                return string.Empty;
-            }
-
-            var lowerText = cyrillicText.ToLowerInvariant();
-            var sb = new StringBuilder(lowerText.Length);
-
-            foreach (var ch in lowerText)
-            {
-                if (TranslitMap.TryGetValue(ch, out var translitChar))
-                {
-                    sb.Append(translitChar);
-                }
-                // Проверяем, является ли символ буквой или цифрой ASCII
-                else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.')
-                {
-                    sb.Append(ch);
-                }
-            }
-
-            // Заменяем множественные пробелы/тире на одно тире
-            string result = WhiteSpaceRegex().Replace(sb.ToString(), "-");
-
-            // Удаляем все небезопасные символы
-            result = UnsafeCharsRegex().Replace(result, "");
-
-            // Убираем возможные тире в начале и в конце
-            return result.Trim('-');
+            return string.Empty;
         }
+
+        var lowerText = text.ToLowerInvariant();
+        // Предварительно выделяем память, чтобы избежать лишних аллокаций
+        var sb = new StringBuilder(lowerText.Length);
+
+        // Флаг для отслеживания последнего добавленного символа, чтобы избежать двойных дефисов.
+        // Инициализируем как true, чтобы предотвратить дефис в самом начале строки.
+        var lastAppendedWasHyphen = true;
+
+        foreach (var ch in lowerText)
+        {
+            if (TranslitMap.TryGetValue(ch, out var translitValue))
+            {
+                // Если транслитерированный символ - это дефис
+                if (translitValue == "-")
+                {
+                    // Добавляем его, только если предыдущий символ не был дефисом
+                    if (!lastAppendedWasHyphen)
+                    {
+                        sb.Append('-');
+                        lastAppendedWasHyphen = true;
+                    }
+                }
+                // Если это любой другой непустой символ (например 'a', 'b', 'zh')
+                else if (translitValue.Length > 0)
+                {
+                    sb.Append(translitValue);
+                    lastAppendedWasHyphen = false;
+                }
+                // Если translitValue пустой (для 'ъ', 'ь'), ничего не делаем.
+            }
+            // Если символ не найден в словаре, он просто игнорируется (превращается в "ничто").
+        }
+
+        // Быстрая проверка и удаление последнего символа, если это дефис.
+        // Это гораздо быстрее, чем `TrimEnd`, так как не создает новую строку.
+        if (sb.Length > 0 && sb[^1] == '-')
+        {
+            sb.Length--; // Просто уменьшаем длину строки
+        }
+
+        return sb.ToString();
     }
 }

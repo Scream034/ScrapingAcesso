@@ -9,4 +9,5 @@ public class AppSettingsModel
     public string? EncryptedAuthUrl { get; set; }
     public string? EncryptedUsername { get; set; }
     public string? EncryptedPassword { get; set; }
+    public string? EncryptedGeminiApiKey { get; set; }
 }

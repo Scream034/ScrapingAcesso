@@ -33,6 +33,7 @@ public static class Constants
                 public static readonly string Log = generateLogFileName();
                 public static readonly string PlaywrightPS1 = "playwright.ps1";
                 public static readonly string ProductData = "data.json";
+                public static readonly string ProductMarkerAdded = ".added";
             }
 
             public static class Folder

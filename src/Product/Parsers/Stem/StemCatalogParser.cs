@@ -1,11 +1,12 @@
 namespace ScraperAcesso.Product.Parsers.Stem;
 
+using GenerativeAI;
 using Microsoft.Playwright;
 using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Product.Stem;
 
-public class StemCatalogParser(string url, Func<string, WebStemProduct> productFactory) : BaseCatalogParser<WebStemProduct>(url, productFactory)
+public class StemCatalogParser(in Uri url, in Func<Uri, WebStemProduct> productFactory) : BaseCatalogParser<WebStemProduct>(url, productFactory)
 {
     public static class XPath
     {
@@ -16,20 +17,20 @@ public class StemCatalogParser(string url, Func<string, WebStemProduct> productF
 
     public IPage? Page { get; private set; }
 
-    public override async Task<ICollection<WebStemProduct>> ParseAsync(ChromiumScraper browser)
+    public override async Task<ICollection<WebStemProduct>> ParseAsync(ChromiumScraper scraper)
     {
-        Page = await browser.NewPageAsync(Constants.Contexts.CatalogParser);
+        Page = await scraper.NewPageAsync(Constants.Contexts.CatalogParser);
         if (Page == null)
         {
             Log.Error("Failed to create a new page in the browser.");
-            return new List<WebStemProduct>();
+            return [];
         }
 
-        Page = await ChromiumScraper.OpenWithRetriesAsync(Page, URL, waitUntil: WaitUntilState.DOMContentLoaded);
+        Page = await ChromiumScraper.OpenWithRetriesAsync(Page, URL.ToString(), waitUntil: WaitUntilState.DOMContentLoaded);
         if (Page == null)
         {
             Log.Error($"Failed to open the URL: {URL}");
-            return new List<WebStemProduct>();
+            return [];
         }
 
         var products = new List<WebStemProduct>();
@@ -37,7 +38,7 @@ public class StemCatalogParser(string url, Func<string, WebStemProduct> productF
         {
             int currentPage = await GetCurrentPageAsync();
             Log.Print($"Parsing page {currentPage}...");
-        
+
             Log.Print("Collecting product links...");
             var productLinks = await Page.QuerySelectorAllAsync(XPath.ToProductLink);
             if (productLinks == null || !productLinks.Any())
@@ -57,10 +58,12 @@ public class StemCatalogParser(string url, Func<string, WebStemProduct> productF
                     continue;
                 }
 
-                var product = await ParseProductAsync(browser, href);
+                var productUrl = new Uri(URL, href);
+                var product = await ParseProductAsync(scraper, productUrl);
                 if (product != null)
                 {
                     products.Add(product);
+                    await product.CloseAsync();
                 }
             }
         }

@@ -1,36 +1,60 @@
-using ScraperAcesso.Components.Log;
-using ScraperAcesso.Utils;
-using System.Text.Json;
-
 namespace ScraperAcesso.Product;
 
-public class BaseProduct
+using ScraperAcesso.Components.Log;
+using ScraperAcesso.Utils;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+
+using IOPath = System.IO.Path;
+
+public class BaseProduct(in string title, in Uri url, in int price = BaseProduct.DefaultPrice, in int count = BaseProduct.DefaultCount)
 {
-    // Константы и статические свойства остаются
     public const int DefaultCount = 9999;
     public const int DefaultPrice = 0;
+    public const uint MaxTitleLength = 256;
+    public const uint MaxShortDescriptionLength = 1000;
 
-    // Публичные свойства для данных
-    public string Title { get; private set; }
-    public string URL { get; private set; }
+    public static readonly JsonSerializerOptions JsonSerializerOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    public string Title { get; protected set; } = title;
+    public string TranslitedTitle => Transliterator.ToSafeId(Title);
+    public Uri URL { get; protected set; } = url;
     public string? Description { get; set; }
     public string? ShortDescription { get; set; }
-    public int Price { get; set; }
-    public int Count { get; private set; } = 9999;
+    public int Price { get; set; } = price;
+    public int Count { get; protected set; } = count;
     public SEOProductInfo? SEO { get; set; }
-    public string[]? AllImages { get; set; }
 
-    // НОВОЕ СВОЙСТВО: Характеристики
     public List<ProductAttribute> Attributes { get; set; } = new();
 
+    public List<string>? AllImages { get; set; }
     public string? PreviewImage => AllImages?.FirstOrDefault();
 
-    public BaseProduct(in string title, in string url, in int price = DefaultPrice, in int count = DefaultCount)
+    public bool IsAdded => File.Exists(IOPath.Combine(FolderPath, Constants.Path.Name.File.ProductMarkerAdded));
+
+    public string FolderPath => IOPath.Combine(Constants.Path.Folder.Products, TranslitedTitle ?? "UNKOWN");
+    public string DataFilePath => IOPath.Combine(FolderPath, Constants.Path.Name.File.ProductData);
+    public string ImageFolderPath => IOPath.Combine(FolderPath, Constants.Path.Name.Folder.ProductImages);
+    public string AddedMarkerFilePath => IOPath.Combine(FolderPath, Constants.Path.Name.File.ProductMarkerAdded);
+
+    public async Task MarkAsAddedAsync()
     {
-        Title = title;
-        URL = url;
-        Price = price;
-        Count = count;
+        try
+        {
+            await File.WriteAllTextAsync(AddedMarkerFilePath, DateTime.UtcNow.ToString("o"));
+            Log.Print($"Product '{Title}' marked as added.");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to mark product '{Title}' as added. Error: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -48,53 +72,46 @@ public class BaseProduct
         try
         {
             // 1. Создаем безопасное имя папки из заголовка
-            var productFolderName = Transliterator.ToSafeId(Title);
-            if (string.IsNullOrWhiteSpace(productFolderName))
+            if (string.IsNullOrWhiteSpace(TranslitedTitle))
             {
-                // Если заголовок состоит только из спецсимволов, используем хеш URL
-                productFolderName = $"product-{URL.GetHashCode():x}";
-                Log.Warning($"Generated fallback folder name '{productFolderName}' for product with title '{Title}'.");
+                Log.Error($"Failed to generate a valid folder name for the product: {Title}");
+                return false;
             }
 
-            var productPath = Path.Combine(Constants.Path.Folder.Products, productFolderName);
-
             // 2. Создаем директории для продукта и изображений
-            Directory.CreateDirectory(productPath);
-            Directory.CreateDirectory(Path.Combine(productPath, Constants.Path.Name.Folder.ProductImages));
+            Directory.CreateDirectory(ImageFolderPath);
 
             // 3. Создаем объект для сохранения в JSON, исключая некоторые свойства
             // Это позволяет контролировать, что именно попадает в файл.
             var dataToSave = new
             {
                 Title,
-                URL,
+                URL = URL.ToString(),
                 Price,
                 Count,
                 Description,
                 ShortDescription,
                 SEO,
                 ImagePaths = AllImages, // Сохраняем ссылки на оригинальные изображения
-                Attributes
+                Attributes,
+                IsAdded,
             };
 
             // 4. Сериализуем и сохраняем в JSON
-            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
-            var jsonContent = JsonSerializer.Serialize(dataToSave, jsonOptions);
+            var jsonContent = JsonSerializer.Serialize(dataToSave, JsonSerializerOptions);
+            await File.WriteAllTextAsync(DataFilePath, jsonContent, Encoding.UTF8);
 
-            await File.WriteAllTextAsync(Path.Combine(productPath, Constants.Path.Name.File.ProductData), jsonContent);
-
-            Log.Print($"Product '{Title}' saved to '{productPath}'");
+            Log.Print($"Product '{Title}' saved to '{DataFilePath}'");
             return true;
         }
         catch (Exception ex)
         {
-            Log.Error($"Failed to save product '{Title}'. Error: {ex.Message}");
-            // Log.Error($"Details: {ex}"); // Раскомментировать для полной трассировки
+            Log.Error($"Failed to save product '{Title}'.");
+            Log.Error($"Details: {ex}"); // Раскомментировать для полной трассировки
             return false;
         }
     }
 
-    /// <summary>
     /// Asynchronously loads all products from the base products folder.
     /// </summary>
     /// <returns>A list of loaded BaseProduct objects.</returns>
@@ -115,7 +132,7 @@ public class BaseProduct
 
         foreach (var dir in productDirectories)
         {
-            var dataFilePath = Path.Combine(dir, "data.json");
+            var dataFilePath = IOPath.Combine(dir, "data.json");
 
             // Проверяем, существует ли файл data.json
             if (!File.Exists(dataFilePath))
@@ -141,14 +158,14 @@ public class BaseProduct
                 }
 
                 // Создаем экземпляр BaseProduct, используя конструктор
-                var product = new BaseProduct(tempProductData.Title, tempProductData.URL, tempProductData.Price, tempProductData.Count)
+                var product = new BaseProduct(tempProductData.Title, new(tempProductData.URL), tempProductData.Price, tempProductData.Count)
                 {
                     // Заполняем остальные свойства
                     Description = tempProductData.Description,
                     ShortDescription = tempProductData.ShortDescription,
                     SEO = tempProductData.SEO,
                     AllImages = tempProductData.ImagePaths,
-                    Attributes = tempProductData.Attributes ?? new List<ProductAttribute>()
+                    Attributes = tempProductData.Attributes ?? []
                 };
 
                 loadedProducts.Add(product);
@@ -180,8 +197,8 @@ public class BaseProduct
         public string? Description { get; set; }
         public string? ShortDescription { get; set; }
         public SEOProductInfo? SEO { get; set; }
-        // Имя свойства должно совпадать с тем, что мы указали при сохранении ("ImagePaths")
-        public string[]? ImagePaths { get; set; }
+        public List<string>? ImagePaths { get; set; }
         public List<ProductAttribute>? Attributes { get; set; }
+        public bool IsAdded { get; set; }
     }
 }

@@ -1,11 +1,23 @@
 namespace ScraperAcesso.Product;
 
-using ScraperAcesso.Components;
+using Microsoft.Playwright;
 
-public class WebProduct(in string url) : BaseProduct(string.Empty, url, BaseProduct.DefaultPrice, BaseProduct.DefaultCount)
+using ScraperAcesso.Components;
+using ScraperAcesso.Components.Log;
+
+public abstract class WebProduct(in Uri url) : BaseProduct(string.Empty, url, BaseProduct.DefaultPrice, BaseProduct.DefaultCount)
 {
-    public virtual async Task ParseAsync(ChromiumScraper browser)
+    public IPage? Page { get; protected set; }
+
+    public abstract Task<bool> ParseAsync(ChromiumScraper browser);
+
+    public virtual async Task CloseAsync()
     {
-        await Task.CompletedTask;
+        if (Page != null)
+        {
+            await Page.CloseAsync();
+            Page = null;
+            Log.Print($"Product closed: {URL}");
+        }
     }
 }

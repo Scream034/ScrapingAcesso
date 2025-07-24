@@ -1,18 +1,18 @@
-using ScraperAcesso.Components;
-
 namespace ScraperAcesso.Product.Parsers;
+
+using ScraperAcesso.Components;
 
 public abstract class BaseCatalogParser<ProductType> where ProductType : WebProduct
 {
-    public string URL { get; private set; }
+    public Uri URL { get; private set; }
     
     // Храним "инструкцию" по созданию продукта
-    private readonly Func<string, ProductType> _productFactory;
+    private readonly Func<Uri, ProductType> _productFactory;
 
     // Конструктор теперь принимает URL и фабрику
-    public BaseCatalogParser(string url, Func<string, ProductType> productFactory)
+    public BaseCatalogParser(Uri url, Func<Uri, ProductType> productFactory)
     {
-        if (string.IsNullOrWhiteSpace(url))
+        if (string.IsNullOrWhiteSpace(url.ToString()))
         {
             throw new ArgumentException("URL cannot be null or empty.", nameof(url));
         }
@@ -22,7 +22,7 @@ public abstract class BaseCatalogParser<ProductType> where ProductType : WebProd
 
     public abstract Task<ICollection<ProductType>> ParseAsync(ChromiumScraper browser);
 
-    protected virtual async Task<ProductType?> ParseProductAsync(ChromiumScraper browser, string url)
+    protected virtual async Task<ProductType?> ParseProductAsync(ChromiumScraper browser, Uri url)
     {
         // Используем фабрику для создания экземпляра
         ProductType product = _productFactory(url);

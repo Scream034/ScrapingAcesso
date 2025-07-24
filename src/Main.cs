@@ -1,6 +1,5 @@
 namespace ScraperAcesso;
 
-using ScraperAcesso.Sites.Authorization;
 using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Components.Menu;
@@ -14,9 +13,9 @@ public static class Program
     {
         Constants.EnsureDirectoriesExist();
         Log.Initialize();
-        Log.Print($"Starting {Constants.AppName} v1.0...");
+        Log.Print($"Starting {Constants.AppName} v2.0...");
 
-        // Настройка корректного завершения
+        // Handle Ctrl+C (Quit)
         Console.CancelKeyPress += (_, eventArgs) =>
         {
             Log.Warning("Ctrl+C pressed. Disposing resources...");
@@ -24,48 +23,57 @@ public static class Program
             Log.Dispose();
             Environment.Exit(0);
         };
-        
+
         await HandleMain(args);
     }
 
     public static async Task HandleMain(string[] args)
     {
-        // 1. Инициализация ключевых сервисов
+        // 1. Initialize services
         Log.Print("Initializing services...");
         var settingsManager = new SettingsManager();
         settingsManager.Load();
 
         await using var scraper = await ChromiumScraper.CreateAsync();
         var appActions = new AppActions(scraper, settingsManager);
-        
-        // 2. Настройка контекстов
+
+        // 2. Configure browser contexts
         await ConfigureBrowserContexts(scraper);
 
-        // 3. Создание и запуск меню
+        // 3. Create and run menu
         InitializeMenu(appActions);
         await MenuManager.RunAsync();
 
         Log.Print("Menu loop finished. Exiting application.");
     }
-    
+
     private static void InitializeMenu(AppActions actions)
     {
         Log.Print("Initializing menu...");
 
+        // Scraper sub menu
         var scraperMenu = MenuManager.AddSubMenu("Scraper Menu");
         scraperMenu.AddAction("Parse Stem Products", actions.ParseStemProductsAsync);
 
+        // Ai sub menu
+        var aiMenu = MenuManager.AddSubMenu("AI Actions");
+        aiMenu.AddAction("Generate SEO for all products", actions.GenerateSeoForAllProductsAsync);
+
+        // Tests sub menu
+        var testMenu = MenuManager.AddSubMenu("Tests");
+        testMenu.AddAction("Test AI Generation", actions.TestAiGenerationAsync);
+
         MenuManager.AddAction("Authorize", actions.PerformAuthorizationAsync);
+        MenuManager.AddAction("Configure Gemini API Key", actions.ConfigureGeminiApiKey);
         MenuManager.SetExitOption("Exit");
 
         Log.Print("Menu initialized successfully.");
     }
-
     private static async Task ConfigureBrowserContexts(ChromiumScraper scraper)
     {
         Log.Print("Configuring browser contexts...");
-        
-        // Контекст для навигации (только HTML)
+
+        // Context for catalog (HTML)
         var catalogContext = await scraper.CreateContextAsync(Constants.Contexts.CatalogParser);
         await catalogContext.RouteAsync("**/*", static route =>
         {
@@ -73,7 +81,7 @@ public static class Program
             else route.ContinueAsync();
         });
 
-        // Контекст для продуктов (HTML и картинки)
+        // Context for product (HTML)
         var productContext = await scraper.CreateContextAsync(Constants.Contexts.ProductParser);
         await productContext.RouteAsync("**/*", static route =>
         {
@@ -82,7 +90,7 @@ public static class Program
             else route.ContinueAsync();
         });
 
-        // Контекст для редактора (HTML и картинки)
+        // Context for editor (HTML)
         var editorContext = await scraper.CreateContextAsync(Constants.Contexts.Editor);
         await editorContext.RouteAsync("**/*", static route =>
         {

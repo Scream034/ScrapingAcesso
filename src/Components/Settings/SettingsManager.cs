@@ -74,6 +74,21 @@ public sealed class SettingsManager
     /// </summary>
     public string GetDecryptedPassword() => DataProtector.Decrypt(_settings.EncryptedPassword ?? string.Empty);
 
+    /// <summary>
+    /// Decrypts and returns the last saved Gemini API key.
+    /// </summary>
+    public string GetDecryptedGeminiApiKey() => DataProtector.Decrypt(_settings.EncryptedGeminiApiKey ?? string.Empty);
+
+
+    /// <summary>
+    /// Decrypts and returns the last saved Gemini API key.
+    /// </summary>
+    public void UpdateAndSaveGeminiApiKey(string apiKey)
+    {
+        _settings.EncryptedGeminiApiKey = DataProtector.Encrypt(apiKey);
+        Save();
+    }
+
     #endregion
 
     /// <summary>
