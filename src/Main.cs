@@ -16,7 +16,7 @@ public static class Program
         Log.Print($"Starting {Constants.AppName} v2.0...");
 
         // Handle Ctrl+C (Quit)
-        Console.CancelKeyPress += (_, eventArgs) =>
+        Console.CancelKeyPress += static (_, eventArgs) =>
         {
             Log.Warning("Ctrl+C pressed. Disposing resources...");
             eventArgs.Cancel = true;

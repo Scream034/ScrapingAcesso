@@ -6,7 +6,7 @@ using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Product.Stem;
 
-public class StemCatalogParser(in Uri url, in Func<Uri, WebStemProduct> productFactory) : BaseCatalogParser<WebStemProduct>(url, productFactory)
+public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> productFactory) : BaseCatalogParser<WebStemProduct>(url, productFactory)
 {
     public static class XPath
     {
