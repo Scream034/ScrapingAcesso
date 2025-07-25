@@ -13,6 +13,8 @@ public static class Constants
             public static readonly string Settings = IOPath.Combine(Folder.App, Name.File.Settings);
             public static readonly string Log = IOPath.Combine(Folder.Log, Name.File.Log);
             public static readonly string PlaywrightPS1 = Name.File.PlaywrightPS1;
+            public static readonly string GemeniModelConfig = IOPath.Combine(Folder.App, Name.File.GemeniModelConfig);
+            public static readonly string GemeniModelState = IOPath.Combine(Folder.App, Name.File.GemeniModelState);
         }
 
         public static class Folder
@@ -34,6 +36,8 @@ public static class Constants
                 public static readonly string PlaywrightPS1 = "playwright.ps1";
                 public static readonly string ProductData = "data.json";
                 public static readonly string ProductMarkerAdded = ".added";
+                public static readonly string GemeniModelConfig = "gemini_models.json";
+                public static readonly string GemeniModelState = "gemini_state.json";
             }
 
             public static class Folder

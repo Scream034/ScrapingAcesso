@@ -12,10 +12,6 @@ using IOPath = System.IO.Path;
 /// </summary>
 public class GeminiModelManager
 {
-    // Пути к файлам конфигурации и состояния.
-    private readonly string _configFilePath = IOPath.Combine(Constants.Path.Folder.App, "gemini_models.json");
-    private readonly string _stateFilePath = IOPath.Combine(Constants.Path.Folder.App, "gemini_state.json");
-
     // Потокобезопасный словарь для хранения временных меток всех запросов для каждой модели.
     // Ключ - ApiName модели, Значение - потокобезопасная очередь с метками времени UTC.
     private ConcurrentDictionary<string, ConcurrentQueue<DateTime>> _requestTimestamps = new();
@@ -101,15 +97,15 @@ public class GeminiModelManager
     /// </summary>
     private void LoadModels()
     {
-        if (!File.Exists(_configFilePath))
+        if (!File.Exists(Constants.Path.File.GemeniModelConfig))
         {
-            Log.Warning($"Config file '{_configFilePath}' not found. Creating a default one.");
+            Log.Warning($"Config file '{Constants.Path.File.GemeniModelConfig}' not found. Creating a default one.");
             CreateDefaultConfigFile();
         }
 
         try
         {
-            var json = File.ReadAllText(_configFilePath);
+            var json = File.ReadAllText(Constants.Path.File.GemeniModelConfig);
             var config = JsonSerializer.Deserialize<GeminiModelConfig>(json);
             _models = config?.Models ?? [];
             if (_models.Count == 0)
@@ -123,7 +119,7 @@ public class GeminiModelManager
         }
         catch (Exception ex)
         {
-            Log.Error($"Failed to load or parse model config file '{_configFilePath}'. Error: {ex.Message}");
+            Log.Error($"Failed to load or parse model config file '{Constants.Path.File.GemeniModelConfig}'. Error: {ex.Message}");
         }
     }
 
@@ -133,7 +129,7 @@ public class GeminiModelManager
     /// </summary>
     private void LoadState()
     {
-        if (!File.Exists(_stateFilePath))
+        if (!File.Exists(Constants.Path.File.GemeniModelState))
         {
             Log.Print("State file not found. Starting with a clean state.");
             return;
@@ -141,7 +137,7 @@ public class GeminiModelManager
 
         try
         {
-            var json = File.ReadAllText(_stateFilePath);
+            var json = File.ReadAllText(Constants.Path.File.GemeniModelState);
             // Десериализуем во временный словарь
             var loadedDict = JsonSerializer.Deserialize<Dictionary<string, List<DateTime>>>(json);
 
@@ -159,7 +155,7 @@ public class GeminiModelManager
         }
         catch (Exception ex)
         {
-            Log.Error($"Failed to load state file '{_stateFilePath}'. Error: {ex.Message}");
+            Log.Error($"Failed to load state file '{Constants.Path.File.GemeniModelState}'. Error: {ex.Message}");
         }
     }
 
@@ -178,7 +174,7 @@ public class GeminiModelManager
                 var dictToSave = _requestTimestamps.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToList());
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 var json = JsonSerializer.Serialize(dictToSave, options);
-                File.WriteAllText(_stateFilePath, json);
+                File.WriteAllText(Constants.Path.File.GemeniModelState, json);
             }
             catch (Exception ex)
             {
@@ -235,7 +231,7 @@ public class GeminiModelManager
         {
             var options = new JsonSerializerOptions { WriteIndented = true };
             var json = JsonSerializer.Serialize(defaultConfig, options);
-            File.WriteAllText(_configFilePath, json);
+            File.WriteAllText(Constants.Path.File.GemeniModelConfig, json);
         }
         catch (Exception ex)
         {

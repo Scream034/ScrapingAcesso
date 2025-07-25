@@ -202,8 +202,6 @@ public sealed class ChromiumScraper : IAsyncDisposable
 	/// <returns>True в случае успеха, иначе False.</returns>
 	public static bool DownloadChromium()
 	{
-		// Убедитесь, что Constants.Path.File.PlaywrightPS1 указывает на правильный путь к вашему скрипту
-		// string scriptPath = "путь\\к\\вашему\\скрипту\\playwright.ps1"; 
 		string arguments = $"-NoProfile -ExecutionPolicy ByPass -Command \"& {{ pwsh -Command \\\"playwright install chromium\\\" }}\"";
 
 		var startInfo = new ProcessStartInfo()
