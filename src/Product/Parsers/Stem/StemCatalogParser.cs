@@ -41,7 +41,7 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
 
             Log.Print("Collecting product links...");
             var productLinks = await Page.QuerySelectorAllAsync(XPath.ToProductLink);
-            if (productLinks == null || !productLinks.Any())
+            if (productLinks == null || productLinks.Count == 0)
             {
                 Log.Error("No product links found.");
                 break;

@@ -89,7 +89,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         }
 
         Log.Print("--- Start parsing Stem products ---");
-        var stemCatalogParser = new StemCatalogParser(new(url), productUrl => new WebStemProduct(productUrl));
+        var stemCatalogParser = new StemCatalogParser(new(url), productUrl => new WebStemProduct(productUrl, _settingsManager));
         var products = await stemCatalogParser.ParseAsync(_scraper);
 
         if (products.Count == 0)
@@ -103,9 +103,34 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         Log.Print("--- Stem products parsing completed ---");
     }
 
-    public async Task GenerateSeoForAllProductsAsync()
+    /// <summary>
+    /// Toggles the automatic SEO generation setting.
+    /// </summary>
+    public Task ToggleAutoSeoGeneration()
     {
-        Log.Print("--- Start SEO Generation for Products ---");
+        var currentState = _settingsManager.GetAutoSeoEnabled();
+        var newState = !currentState;
+        _settingsManager.SetAutoSeoEnabled(newState);
+        Log.Print($"Automatic SEO generation on product parse is now {(newState ? "ENABLED" : "DISABLED")}.");
+
+        // check for gemeni api
+        if (newState)
+        {
+            var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+            if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
+            {
+                Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
+                _settingsManager.SetAutoSeoEnabled(false);
+                return Task.CompletedTask;
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public async Task GenerateSeoForAllRawProductsAsync()
+    {
+        Log.Print("--- Start SEO Generation for Raw Products ---");
 
         var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
@@ -226,6 +251,94 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         }
     }
 
+    /// <summary>
+    /// Starts a test for the AI batch generation of SEO content.
+    /// </summary>
+    public async Task TestAiBatchGenerationAsync()
+    {
+        Log.Print("--- Starting AI Batch Generation Test ---");
+
+        // 1. Проверяем, что API ключ настроен
+        var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
+        {
+            Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
+            return;
+        }
+
+        // 2. Создаем несколько тестовых продуктов
+        var testProducts = new List<BaseProduct>
+        {
+            new BaseProduct(
+                title: "Игровой ноутбук CyberForce X-15",
+                url: new Uri("http://example.com/product/cyberforce-x15")
+            ) {
+                Description = "Мощный игровой ноутбук CyberForce X-15 оснащен процессором Intel Core i9 последнего поколения и видеокартой NVIDIA GeForce RTX 4080. 15.6-дюймовый QHD экран с частотой обновления 240 Гц обеспечивает плавное и четкое изображение. Система охлаждения с двумя вентиляторами.",
+                Price = 185000
+            },
+            new BaseProduct(
+                title: "Эргономичное кресло 'Aetheria'",
+                url: new Uri("http://example.com/product/aetheria-chair")
+            ) {
+                Description = "Офисное кресло Aetheria с поддержкой поясницы и синхромеханизмом качания. Обивка из дышащей сетчатой ткани, подлокотники регулируются в четырех направлениях. Идеально для долгой работы за компьютером, снижает нагрузку на позвоночник.",
+                Price = 25000
+            },
+            new BaseProduct(
+                title: "Умная колонка 'Aura'",
+                url: new Uri("http://example.com/product/aura-speaker")
+            ) {
+                Description = "Беспроводная умная колонка Aura с голосовым ассистентом Алиса. Качественный объемный звук на 360 градусов. Подключается по Wi-Fi и Bluetooth. Управляет устройствами умного дома, включает музыку, рассказывает новости и погоду.",
+                Price = 8990
+            }
+        };
+
+        Log.Print($"Created {testProducts.Count} mock products for the batch test.");
+
+        // 3. Ставим все продукты в очередь на обработку
+        Log.Print("Enqueuing products for batch processing...");
+        foreach (var product in testProducts)
+        {
+            GeminiBatchProcessor.Enqueue(product);
+        }
+
+        // 4. Ждем, пока Batch Processor выполнит свою работу.
+        // Время ожидания должно быть больше, чем интервал проверки очереди (dispatchInterval)
+        const int waitSeconds = 15;
+        Log.Print($"Waiting for {waitSeconds} seconds for the batch to be processed by the background task...");
+        await Task.Delay(TimeSpan.FromSeconds(waitSeconds));
+
+        // 5. Проверяем результаты
+        Log.Print("--- Verification ---");
+        int successCount = 0;
+        foreach (var product in testProducts)
+        {
+            Console.WriteLine("--------------------");
+            Log.Print($"Checking product: '{product.Title}'");
+            if (product.SEO != null)
+            {
+                Log.Print("[SUCCESS] SEO data was generated.");
+                Log.Print($"  -> Short Desc: {product.ShortDescription?[..Math.Min(product.ShortDescription.Length, 70)]}...");
+                Log.Print($"  -> SEO Sentence: {product.SEO.SeoSentence}");
+                Log.Print($"  -> Keywords: {product.SEO.Keywords}");
+                successCount++;
+            }
+            else
+            {
+                Log.Error("[FAILURE] SEO data is missing for this product.");
+            }
+        }
+        Console.WriteLine("--------------------");
+
+        // 6. Выводим итоговый результат теста
+        if (successCount == testProducts.Count)
+        {
+            Log.Print($"--- AI Batch Generation Test Successful. Processed {successCount}/{testProducts.Count} products. ---");
+        }
+        else
+        {
+            Log.Error($"--- AI Batch Generation Test Partially Failed. Processed {successCount}/{testProducts.Count} products. ---");
+        }
+    }
 
     /// <summary>
     /// Prompts the user for input with an optional default value.

@@ -3,13 +3,16 @@ namespace ScraperAcesso.Product.Stem;
 using System.Threading.Tasks;
 
 using Microsoft.Playwright;
-
+using ScraperAcesso.Ai;
 using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
+using ScraperAcesso.Components.Settings;
 using ScraperAcesso.Utils;
 
-public sealed class WebStemProduct(in Uri url) : WebProduct(url)
+public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) : WebProduct(url)
 {
+    private readonly SettingsManager _settingsManager = settingsManager;
+
     public static class XPath
     {
         public const string Title = "//div/h1[contains(@class, 'js-popup-title')]";
@@ -38,10 +41,17 @@ public sealed class WebStemProduct(in Uri url) : WebProduct(url)
 
         Title = await GetTitleAsync(Page);
 
+        // Проверяем заголовок до того, как тратить время на остальной парсинг
+        if (string.IsNullOrWhiteSpace(Title))
+        {
+            Log.Error($"Failed to parse product title, it is empty. URL: {URL}");
+            return false;
+        }
+
         var descriptionTask = GetDescriptionAsync(Page);
         var priceTask = GetPriceAsync(Page);
         var attributesTask = GetAttributesAsync(Page);
-        var imageUrlsTask = GetImageUrlsAndSaveAsync(Page, ImageFolderPath);
+        var imageUrlsTask = EnqueueImagesForDownloadAsync(Page, ImageFolderPath);
 
         Description = await descriptionTask;
         Price = await priceTask;
@@ -54,24 +64,20 @@ public sealed class WebStemProduct(in Uri url) : WebProduct(url)
             AllImages = [];
         }
 
-        Log.Print($"Parsed product: {Title} - {Price} - {Description}");
-        if (string.IsNullOrEmpty(Title) || Price <= 0)
-        {
-            Log.Error($"Failed to parse product details: {URL}");
-            return false;
-        }
-        else if (Title.Length > MaxTitleLength)
+        Log.Print($"Parsed product: {Title}");
+        if (Title.Length > MaxTitleLength)
         {
             Log.Error($"Product title exceeds maximum length ({MaxTitleLength}): {Title}");
             return false;
         }
-        else if (ShortDescription?.Length > MaxShortDescriptionLength)
+
+        // Auto SEO generation in background
+        if (_settingsManager.GetAutoSeoEnabled() && !string.IsNullOrWhiteSpace(Description))
         {
-            Log.Error($"Product short description exceeds maximum length ({MaxShortDescriptionLength}): {ShortDescription}");
-            return false;
+            Log.Print($"Auto-SEO is enabled. Generating content for '{URL}'...");
+            GeminiBatchProcessor.Enqueue(this);
         }
 
-        // Save product details to the database, no need to wait for the result
         _ = SaveAsync();
 
         return true;
@@ -113,25 +119,17 @@ public sealed class WebStemProduct(in Uri url) : WebProduct(url)
         return names.Zip(values, (name, value) => new ProductAttribute(name, value)).ToList();
     }
 
-    ///<summary>
-    /// Get all image URLs from the product page.
+    /// <summary>
+    /// Gets all image URLs from the product page.
     /// </summary>
-    public static async Task<List<string>?> GetImageUrlsAsync(IPage page)
+    public static async Task<List<string>> GetImageUrlsAsync(IPage page)
     {
-        if (page == null)
-        {
-            Log.Error("Page is not initialized. Cannot download images.");
-            return null;
-        }
+        var imageUrls = new List<string>();
+        if (page == null) return imageUrls;
 
         var elements = await page.Locator(XPath.Images).AllAsync();
-        if (elements == null || !elements.Any())
-        {
-            Log.Warning("No images found on the product page.");
-            return null;
-        }
+        if (elements.Count == 0) return imageUrls;
 
-        var imageUrls = new List<string>();
         var baseUrl = new Uri(page.Url);
         foreach (var element in elements)
         {
@@ -141,27 +139,32 @@ public sealed class WebStemProduct(in Uri url) : WebProduct(url)
                 imageUrls.Add(new Uri(baseUrl, src).ToString());
             }
         }
-
         return imageUrls;
     }
 
     /// <summary>
-    /// Get image URLs and download them to the specified folder.
+    /// Finds image URLs on the page and enqueues them for background download.
     /// </summary>
-    public static async Task<List<string>?> GetImageUrlsAndSaveAsync(IPage page, string destinationFolder)
+    /// <returns>A list of predicted local file paths for the enqueued images.</returns>
+    public static async Task<List<string>> EnqueueImagesForDownloadAsync(IPage page, string destinationFolder)
     {
         var imageUrls = await GetImageUrlsAsync(page);
         if (imageUrls == null || imageUrls.Count == 0)
         {
-            Log.Warning("No image URLs found to download.");
-            return null;
+            Log.Warning("No image URLs found to enqueue.");
+            return [];
         }
 
-        // Ensure the destination folder exists
         Directory.CreateDirectory(destinationFolder);
 
-        // Download and save images
-        var savedFilePaths = await ImageDownloader.DownloadAndSaveAsync(imageUrls, destinationFolder);
-        return savedFilePaths;
+        var enqueuedFilePaths = new List<string>();
+        foreach (var url in imageUrls)
+        {
+            var predictedPath = QueuedImageDownloader.Enqueue(url, destinationFolder);
+            enqueuedFilePaths.Add(predictedPath);
+        }
+
+        Log.Print($"Enqueued {enqueuedFilePaths.Count} images for download.");
+        return enqueuedFilePaths;
     }
 }

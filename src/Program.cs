@@ -1,9 +1,11 @@
 namespace ScraperAcesso;
 
+using ScraperAcesso.Ai;
 using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Components.Menu;
 using ScraperAcesso.Components.Settings;
+using ScraperAcesso.Utils;
 
 public static class Program
 {
@@ -13,18 +15,34 @@ public static class Program
     {
         Constants.EnsureDirectoriesExist();
         Log.Initialize();
-        Log.Print($"Starting {Constants.AppName} v2.0...");
+        QueuedImageDownloader.Initialize();
+        GeminiBatchProcessor.Initialize();
 
-        // Handle Ctrl+C (Quit)
-        Console.CancelKeyPress += static (_, eventArgs) =>
+        Log.Print($"Starting {Constants.AppName} v2.4...");
+
+        // Handle Ctrl+C (graceful shutdown)
+        Console.CancelKeyPress += static async (_, eventArgs) =>
         {
             Log.Warning("Ctrl+C pressed. Disposing resources...");
             eventArgs.Cancel = true;
-            Log.Dispose();
+            await ShutdownServicesAsync();
             Environment.Exit(0);
         };
 
-        await HandleMain(args);
+        try
+        {
+            await HandleMain(args);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"An unhandled exception occurred in Main: {ex}");
+        }
+        finally
+        {
+            // Dispose services
+            await ShutdownServicesAsync();
+            Log.Print("Application has shut down.");
+        }
     }
 
     public static async Task HandleMain(string[] args)
@@ -47,28 +65,40 @@ public static class Program
         Log.Print("Menu loop finished. Exiting application.");
     }
 
+    private static async Task ShutdownServicesAsync()
+    {
+        await GeminiBatchProcessor.ShutdownAsync();
+        await QueuedImageDownloader.ShutdownAsync();
+        GeminiService.Shutdown(); // Сохраняем состояние лимитов
+        Log.Dispose();
+    }
+
     private static void InitializeMenu(AppActions actions)
     {
         Log.Print("Initializing menu...");
 
-        // Scraper sub menu
         var scraperMenu = MenuManager.AddSubMenu("Scraper Menu");
         scraperMenu.AddAction("Parse Stem Products", actions.ParseStemProductsAsync);
 
-        // Ai sub menu
         var aiMenu = MenuManager.AddSubMenu("AI Actions");
-        aiMenu.AddAction("Generate SEO for all products", actions.GenerateSeoForAllProductsAsync);
+        aiMenu.AddAction("Generate SEO for all products", actions.GenerateSeoForAllRawProductsAsync);
 
         // Tests sub menu
         var testMenu = MenuManager.AddSubMenu("Tests");
-        testMenu.AddAction("Test AI Generation", actions.TestAiGenerationAsync);
+        testMenu.AddAction("Test AI Generation (Single)", actions.TestAiGenerationAsync);
+        testMenu.AddAction("Test AI Generation (Batch)", actions.TestAiBatchGenerationAsync); // <-- ДОБАВЛЕНО
+
+        // Settings sub menu
+        var settingsMenu = MenuManager.AddSubMenu("Settings");
+        settingsMenu.AddAction("Configure Gemini API Key", actions.ConfigureGeminiApiKey);
+        settingsMenu.AddAction("Toggle Auto-SEO on Parse", actions.ToggleAutoSeoGeneration);
 
         MenuManager.AddAction("Authorize", actions.PerformAuthorizationAsync);
-        MenuManager.AddAction("Configure Gemini API Key", actions.ConfigureGeminiApiKey);
         MenuManager.SetExitOption("Exit");
 
         Log.Print("Menu initialized successfully.");
     }
+
     private static async Task ConfigureBrowserContexts(ChromiumScraper scraper)
     {
         Log.Print("Configuring browser contexts...");

@@ -79,6 +79,16 @@ public sealed class SettingsManager
     /// </summary>
     public string GetDecryptedGeminiApiKey() => DataProtector.Decrypt(_settings.EncryptedGeminiApiKey ?? string.Empty);
 
+    #endregion
+
+    public bool GetAutoSeoEnabled() => _settings.AutoGenerateSeoOnParse;
+    public void SetAutoSeoEnabled(bool isEnabled)
+    {
+        if (_settings.AutoGenerateSeoOnParse == isEnabled) return;
+        _settings.AutoGenerateSeoOnParse = isEnabled;
+        Save();
+        Log.Print($"Setting 'AutoGenerateSeoOnParse' updated to: {isEnabled}");
+    }
 
     /// <summary>
     /// Decrypts and returns the last saved Gemini API key.
@@ -88,8 +98,6 @@ public sealed class SettingsManager
         _settings.EncryptedGeminiApiKey = DataProtector.Encrypt(apiKey);
         Save();
     }
-
-    #endregion
 
     /// <summary>
     /// Updates the authorization data, encrypts it, and saves the settings.

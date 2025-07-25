@@ -70,7 +70,7 @@ public class ConsoleMenuManager
     /// </summary>
     public async Task RunAsync()
     {
-        if (!_items.Any())
+        if (_items.Count == 0)
         {
             Log.Error($"Menu '{_title}' has no items.");
             return;
