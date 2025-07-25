@@ -116,7 +116,7 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
         var names = await page.Locator(XPath.AttributeName).AllInnerTextsAsync();
         var values = await page.Locator(XPath.AttributeValue).AllInnerTextsAsync();
 
-        return names.Zip(values, (name, value) => new ProductAttribute(name, value)).ToList();
+        return [.. names.Zip(values, (name, value) => new ProductAttribute(name, value))];
     }
 
     /// <summary>
@@ -127,18 +127,22 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
         var imageUrls = new List<string>();
         if (page == null) return imageUrls;
 
-        var elements = await page.Locator(XPath.Images).AllAsync();
+        var elements = await page.QuerySelectorAllAsync(XPath.Images);
         if (elements.Count == 0) return imageUrls;
 
         var baseUrl = new Uri(page.Url);
-        foreach (var element in elements)
+        for (var i = 0; i < MaxImageCount; i++)
         {
+            var element = elements[i];
+            if (element == null) break;
+
             var src = await element.GetAttributeAsync("data-src");
             if (!string.IsNullOrEmpty(src))
             {
                 imageUrls.Add(new Uri(baseUrl, src).ToString());
             }
         }
+
         return imageUrls;
     }
 

@@ -1,12 +1,14 @@
 namespace ScraperAcesso.Product.Parsers.Stem;
 
-using GenerativeAI;
+using System.Diagnostics;
 using Microsoft.Playwright;
+using ScraperAcesso.Ai;
 using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Product.Stem;
+using ScraperAcesso.Utils;
 
-public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> productFactory) : BaseCatalogParser<WebStemProduct>(url, productFactory)
+public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> productFactory, int? _maxProductsToParse = null) : BaseCatalogParser<WebStemProduct>(url, productFactory, _maxProductsToParse)
 {
     public static class XPath
     {
@@ -14,8 +16,6 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
         public const string CurrentPage = "//div[@class='module-pagination__wrapper']/span";
         public const string NextPageButton = "//a[@title='След.']";
     }
-
-    public IPage? Page { get; private set; }
 
     public override async Task<ICollection<WebStemProduct>> ParseAsync(ChromiumScraper scraper)
     {
@@ -34,27 +34,33 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
         }
 
         var products = new List<WebStemProduct>();
-        while (await NextPageAsync())
+        bool morePages;
+        do
         {
             int currentPage = await GetCurrentPageAsync();
             Log.Print($"Parsing page {currentPage}...");
 
             Log.Print("Collecting product links...");
-            var productLinks = await Page.QuerySelectorAllAsync(XPath.ToProductLink);
-            if (productLinks == null || productLinks.Count == 0)
+            var productLinks = await Page.Locator(XPath.ToProductLink).AllAsync();
+            if (productLinks.Count == 0)
             {
-                Log.Error("No product links found.");
+                Log.Warning("No product links found on this page. Finishing parsing.");
                 break;
             }
 
             Log.Print($"Found {productLinks.Count} product links on page {currentPage}.");
-            for (int i = 0; i < productLinks.Count; i++)
+            foreach (var productLink in productLinks)
             {
-                var productLink = productLinks[i];
+                if (_maxProductsToParse.HasValue && products.Count >= _maxProductsToParse.Value)
+                {
+                    Log.Print($"Reached the specified limit of {_maxProductsToParse.Value} products. Stopping parser.");
+                    goto EndParsing; // Выходим из обоих циклов
+                }
+
                 var href = await productLink.GetAttributeAsync("href");
                 if (string.IsNullOrWhiteSpace(href))
                 {
-                    Log.Warning($"Found a product link with no href attribute at - Index: {i}, Current Page: {currentPage}");
+                    Log.Warning($"Found a product link with no href attribute on page {currentPage}.");
                     continue;
                 }
 
@@ -66,9 +72,51 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
                     await product.CloseAsync();
                 }
             }
+
+            // Проверяем наличие следующей страницы и переходим
+            morePages = await NextPageAsync();
+
+        } while (morePages);
+
+    EndParsing: // Метка для выхода из циклов
+        await WaitForBackgroundTasksAsync();
+        await CloseAsync();
+        return products;
+    }
+
+    /// <summary>
+    /// Новый приватный метод для ожидания завершения всех фоновых задач (ИИ и изображения).
+    /// </summary>
+    private static async Task WaitForBackgroundTasksAsync()
+    {
+        // Получаем задачи ожидания от наших сервисов
+        var imageTask = QueuedImageDownloader.WaitForIdleAsync();
+        var aiTask = GeminiBatchProcessor.WaitForIdleAsync();
+
+        // Если обе задачи уже завершены, выходим сразу
+        if (imageTask.IsCompleted && aiTask.IsCompleted)
+        {
+            Log.Print("All background tasks were already completed.");
+            return;
         }
 
-        return products;
+        Log.Print("Catalog parsing complete. Waiting for background tasks to finish...");
+        var stopwatch = Stopwatch.StartNew();
+
+        // Асинхронно ждем, пока обе задачи не будут завершены
+        while (!imageTask.IsCompleted || !aiTask.IsCompleted)
+        {
+            string imageStatus = imageTask.IsCompleted ? "Done" : "Working...";
+            string aiStatus = aiTask.IsCompleted ? "Done" : "Working...";
+            Log.Print($"  -> Waiting... [Images: {imageStatus}] [AI SEO: {aiStatus}]");
+            await Task.Delay(2000); // Проверяем статус каждые 2 секунды
+        }
+
+        // Финальное ожидание на случай, если одна из задач завершилась прямо перед проверкой
+        await Task.WhenAll(imageTask, aiTask);
+
+        stopwatch.Stop();
+        Log.Print($"All background tasks completed successfully in {stopwatch.Elapsed.TotalSeconds:F2} seconds.");
     }
 
     /// <summary>

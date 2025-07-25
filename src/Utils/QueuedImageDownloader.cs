@@ -30,6 +30,13 @@ public static class QueuedImageDownloader
     private static CancellationTokenSource? s_cts;
     private static SemaphoreSlim? s_semaphore;
     private static Task? s_processingTask;
+    private static TaskCompletionSource<bool> s_idleTcs = new();
+    private static uint s_activeDownloads = 0;
+
+    static QueuedImageDownloader()
+    {
+        s_idleTcs.SetResult(true);
+    }
 
     /// <summary>
     /// Initializes the downloader, loads pending jobs, and starts the background processing.
@@ -69,16 +76,25 @@ public static class QueuedImageDownloader
     public static string Enqueue(string imageUrl, string destinationFolder)
     {
         var finalFilePath = GetDeterministicFilePath(imageUrl, destinationFolder);
-
         var job = new DownloadJob(imageUrl, finalFilePath);
 
-        // Add to the queue only if it's not already there or being processed.
         if (s_jobQueue.TryAdd(imageUrl, job))
         {
+            // Если мы добавили новую работу, а система была в "покое",
+            // нужно создать новую "задачу-событие" для ожидания.
+            if (s_idleTcs.Task.IsCompleted)
+            {
+                s_idleTcs = new TaskCompletionSource<bool>();
+            }
             Log.Print($"Image enqueued: {imageUrl}");
         }
 
         return finalFilePath;
+    }
+
+    public static Task WaitForIdleAsync()
+    {
+        return s_idleTcs.Task;
     }
 
     private static async Task ProcessQueueAsync(CancellationToken token)
@@ -86,44 +102,63 @@ public static class QueuedImageDownloader
         Log.Print("Image download background task started.");
         while (!token.IsCancellationRequested)
         {
+            // Если очередь пуста, просто ждем.
             if (s_jobQueue.IsEmpty)
             {
-                await Task.Delay(WaitingImagesDelay, token); // Wait if the queue is empty
+                // Проверяем, не пора ли завершить "задачу-событие".
+                // Это нужно на случай, если последняя задача завершилась, а очередь уже была пуста.
+                if (Interlocked.CompareExchange(ref s_activeDownloads, 0, 0) == 0)
+                {
+                    s_idleTcs.TrySetResult(true);
+                }
+
+                await Task.Delay(WaitingImagesDelay, token);
                 continue;
             }
 
-            var jobsToProcess = s_jobQueue.Values.ToList(); // Take a snapshot
+            // Берем снимок задач, чтобы избежать вечного цикла, если задачи добавляются постоянно.
+            var jobsToProcess = s_jobQueue.Keys.ToList();
 
-            foreach (var job in jobsToProcess)
+            foreach (var imageUrl in jobsToProcess)
             {
                 if (token.IsCancellationRequested) break;
 
-                await s_semaphore!.WaitAsync(token);
-
-                _ = Task.Run(async () =>
+                // Если задача все еще в очереди (не была обработана другим потоком)
+                if (s_jobQueue.TryRemove(imageUrl, out var job))
                 {
-                    try
+                    await s_semaphore!.WaitAsync(token);
+
+                    // Увеличиваем счетчик активных задач
+                    Interlocked.Increment(ref s_activeDownloads);
+
+                    _ = Task.Run(async () =>
                     {
-                        if (!File.Exists(job.DestinationPath))
+                        try
                         {
-                            await DownloadAndSaveImageAsync(job);
+                            if (!File.Exists(job.DestinationPath))
+                            {
+                                await DownloadAndSaveImageAsync(job);
+                            }
                         }
-                        // If successful (or already exists), remove from queue
-                        s_jobQueue.TryRemove(job.ImageUrl, out _);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Error($"Failed to process download job for {job.ImageUrl}. Error: {ex.Message}");
-                        // Optionally, you could implement a retry mechanism here
-                        // For now, we just log and it will be retried on next app start if not removed.
-                    }
-                    finally
-                    {
-                        s_semaphore.Release();
-                    }
-                }, token);
+                        catch (Exception ex)
+                        {
+                            Log.Error($"Failed to process download job for {job.ImageUrl}. Error: {ex.Message}");
+                            // Возвращаем в очередь при ошибке для повторной попытки
+                            s_jobQueue.TryAdd(job.ImageUrl, job);
+                        }
+                        finally
+                        {
+                            s_semaphore.Release();
+                            // Уменьшаем счетчик и проверяем, не стали ли мы "в покое"
+                            if (Interlocked.Decrement(ref s_activeDownloads) == 0 && s_jobQueue.IsEmpty)
+                            {
+                                s_idleTcs.TrySetResult(true);
+                            }
+                        }
+                    }, token);
+                }
             }
-            await Task.Delay(LoopDelay, token); // Small delay to prevent tight looping
+            await Task.Delay(LoopDelay, token);
         }
         Log.Print("Image download background task stopped.");
     }

@@ -13,6 +13,12 @@ public static class GeminiBatchProcessor
     // Настройки батчинга
     private const int BatchSize = 3; // Сколько товаров в одном запросе
     private static readonly TimeSpan s_dispatchInterval = TimeSpan.FromSeconds(10); // Как часто проверять очередь
+    private static TaskCompletionSource<bool> s_idleTcs = new();
+
+    static GeminiBatchProcessor()
+    {
+        s_idleTcs.SetResult(true);
+    }
 
     public static void Initialize()
     {
@@ -39,9 +45,21 @@ public static class GeminiBatchProcessor
     public static void Enqueue(BaseProduct product)
     {
         if (product.SEO != null || string.IsNullOrWhiteSpace(product.Description)) return;
-        
+
         s_productQueue.Enqueue(product);
+
+        // Если добавили работу, а система была в "покое", создаем новую задачу для ожидания.
+        if (s_idleTcs.Task.IsCompleted)
+        {
+            s_idleTcs = new TaskCompletionSource<bool>();
+        }
+
         Log.Print($"Product '{product.Title}' enqueued for SEO generation.");
+    }
+
+    public static Task WaitForIdleAsync()
+    {
+        return s_idleTcs.Task;
     }
 
     private static async Task ProcessingLoopAsync(CancellationToken token)
@@ -57,7 +75,12 @@ public static class GeminiBatchProcessor
 
     private static async Task ProcessQueueAsync()
     {
-        if (s_productQueue.IsEmpty) return;
+        if (s_productQueue.IsEmpty)
+        {
+            // If the queue is empty, set the idle TCS and return.
+            s_idleTcs.TrySetResult(true);
+            return;
+        }
 
         Log.Print($"{s_productQueue.Count} products in SEO queue. Processing in batches of {BatchSize}.");
 
@@ -82,7 +105,7 @@ public static class GeminiBatchProcessor
                     foreach (var p in productsBatch.Where(prod => prod.SEO != null))
                     {
                         // Сохраняем каждый продукт, у которого появились SEO-данные
-                        _ = p.SaveAsync(); 
+                        _ = p.SaveAsync();
                     }
                 }
                 else

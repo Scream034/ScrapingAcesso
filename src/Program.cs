@@ -16,9 +16,8 @@ public static class Program
         Constants.EnsureDirectoriesExist();
         Log.Initialize();
         QueuedImageDownloader.Initialize();
-        GeminiBatchProcessor.Initialize();
 
-        Log.Print($"Starting {Constants.AppName} v2.4...");
+        Log.Print($"Starting {Constants.AppName} v2.5...");
 
         // Handle Ctrl+C (graceful shutdown)
         Console.CancelKeyPress += static async (_, eventArgs) =>
@@ -86,7 +85,9 @@ public static class Program
         // Tests sub menu
         var testMenu = MenuManager.AddSubMenu("Tests");
         testMenu.AddAction("Test AI Generation (Single)", actions.TestAiGenerationAsync);
-        testMenu.AddAction("Test AI Generation (Batch)", actions.TestAiBatchGenerationAsync); // <-- ДОБАВЛЕНО
+        testMenu.AddAction("Test AI Generation (Batch)", actions.TestAiBatchGenerationAsync);
+        testMenu.AddAction("Run Full E2E Cycle Test (Must be login)", actions.RunFullCycleTestAsync);
+        testMenu.AddAction("Test Single Product Addition (Auto-Login)", actions.RunSingleProductEditorTestAsync);
 
         // Settings sub menu
         var settingsMenu = MenuManager.AddSubMenu("Settings");
@@ -122,12 +123,6 @@ public static class Program
 
         // Context for editor (HTML)
         var editorContext = await scraper.CreateContextAsync(Constants.Contexts.Editor);
-        await editorContext.RouteAsync("**/*", static route =>
-        {
-            var type = route.Request.ResourceType;
-            if (type is not "document" and not "image" and not "script" and not "xhr") route.AbortAsync();
-            else route.ContinueAsync();
-        });
 
         Log.Print("Contexts configured successfully.");
     }

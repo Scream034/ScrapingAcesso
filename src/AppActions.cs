@@ -1,5 +1,6 @@
 namespace ScraperAcesso;
 
+using System.Diagnostics;
 using ScraperAcesso.Ai;
 using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
@@ -8,6 +9,7 @@ using ScraperAcesso.Product;
 using ScraperAcesso.Product.Parsers.Stem;
 using ScraperAcesso.Product.Stem;
 using ScraperAcesso.Sites.Authorization;
+using ScraperAcesso.Sites.Editor;
 
 /// <summary>
 /// Handles application actions such as authorization and product parsing.
@@ -90,6 +92,19 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
 
         Log.Print("--- Start parsing Stem products ---");
         var stemCatalogParser = new StemCatalogParser(new(url), productUrl => new WebStemProduct(productUrl, _settingsManager));
+
+        if (_settingsManager.GetAutoSeoEnabled())
+        {
+            var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+            if (!GeminiService.Initialize(apiKey))
+            {
+                Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
+                _settingsManager.SetAutoSeoEnabled(false);
+                return;
+            }
+            GeminiBatchProcessor.Initialize();
+        }
+
         var products = await stemCatalogParser.ParseAsync(_scraper);
 
         if (products.Count == 0)
@@ -217,6 +232,8 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
             return;
         }
 
+        GeminiBatchProcessor.Initialize();
+
         // 2. Создаем тестовый продукт с заранее заданными данными
         var testProduct = new BaseProduct(
             title: "Игровой ноутбук CyberForce X-15",
@@ -225,13 +242,13 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         {
             Description = "Мощный игровой ноутбук CyberForce X-15 оснащен процессором Intel Core i9 последнего поколения и видеокартой NVIDIA GeForce RTX 4080. 15.6-дюймовый QHD экран с частотой обновления 240 Гц обеспечивает плавное и четкое изображение. Система охлаждения с двумя вентиляторами и испарительной камерой предотвращает перегрев даже при максимальных нагрузках. Клавиатура с RGB-подсветкой. Объем оперативной памяти 32 ГБ DDR5.",
             Price = 185000,
-            Attributes = new List<ProductAttribute>
-            {
+            Attributes =
+            [
                 new("Процессор", "Intel Core i9-13900HX"),
                 new("Видеокарта", "NVIDIA GeForce RTX 4080 Laptop"),
                 new("Экран", "15.6\" QHD (2560x1440) 240Hz"),
                 new("Память", "32 ГБ DDR5")
-            }
+            ]
         };
 
         Log.Print($"Running test for mock product: '{testProduct.Title}'");
@@ -266,24 +283,26 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
             return;
         }
 
+        GeminiBatchProcessor.Initialize();
+
         // 2. Создаем несколько тестовых продуктов
         var testProducts = new List<BaseProduct>
         {
-            new BaseProduct(
+            new(
                 title: "Игровой ноутбук CyberForce X-15",
                 url: new Uri("http://example.com/product/cyberforce-x15")
             ) {
                 Description = "Мощный игровой ноутбук CyberForce X-15 оснащен процессором Intel Core i9 последнего поколения и видеокартой NVIDIA GeForce RTX 4080. 15.6-дюймовый QHD экран с частотой обновления 240 Гц обеспечивает плавное и четкое изображение. Система охлаждения с двумя вентиляторами.",
                 Price = 185000
             },
-            new BaseProduct(
+            new(
                 title: "Эргономичное кресло 'Aetheria'",
                 url: new Uri("http://example.com/product/aetheria-chair")
             ) {
                 Description = "Офисное кресло Aetheria с поддержкой поясницы и синхромеханизмом качания. Обивка из дышащей сетчатой ткани, подлокотники регулируются в четырех направлениях. Идеально для долгой работы за компьютером, снижает нагрузку на позвоночник.",
                 Price = 25000
             },
-            new BaseProduct(
+            new(
                 title: "Умная колонка 'Aura'",
                 url: new Uri("http://example.com/product/aura-speaker")
             ) {
@@ -341,10 +360,205 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
     }
 
     /// <summary>
+    /// Запускает полный сквозной (E2E) тест: Парсинг каталога -> Обработка в редакторе.
+    /// </summary>
+    public async Task RunFullCycleTestAsync()
+    {
+        Log.Print("--- Starting Full End-to-End Cycle Test ---");
+
+        // --- Вводные данные от пользователя ---
+        Console.WriteLine("Enter the catalog URL to start parsing from (default: https://stemco.ru/catalog/steam_konstruirovanie/):");
+        string? catalogUrl = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(catalogUrl))
+        {
+            catalogUrl = "https://stemco.ru/catalog/steam_konstruirovanie/";
+        }
+
+        Console.WriteLine("How many products to test with? (default: 2)");
+        string? countInput = Console.ReadLine();
+        if (!int.TryParse(countInput, out int productCount) || productCount <= 0)
+        {
+            productCount = 2;
+        }
+
+        var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
+        {
+            Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
+            return;
+        }
+
+        GeminiBatchProcessor.Initialize();
+
+        // --- Фаза 1: Парсинг и обработка ---
+        Log.Print($"--- [Phase 1: Parsing] Starting to parse {productCount} products from catalog... ---");
+        var stopwatch = Stopwatch.StartNew();
+
+        var stemCatalogParser = new StemCatalogParser(new(catalogUrl), productUrl => new WebStemProduct(productUrl, _settingsManager), productCount);
+        var parsedProducts = await stemCatalogParser.ParseAsync(_scraper);
+
+        stopwatch.Stop();
+        Log.Print($"--- [Phase 1: Parsing] Finished in {stopwatch.Elapsed.TotalSeconds:F2} seconds. ---");
+
+        if (parsedProducts.Count == 0)
+        {
+            Log.Error("No products were parsed from the catalog. Cannot continue the test.");
+            return;
+        }
+
+        // --- Фаза 2: Промежуточная верификация ---
+        Log.Print($"--- [Phase 2: Verification] Verifying saved products... ---");
+        var productsForEditor = await BaseProduct.LoadProductsByStatusAsync(false);
+        if (productsForEditor.Count == 0)
+        {
+            Log.Error("Verification failed: No products with 'Not Added' status found on disk.");
+            return;
+        }
+        Log.Print($"Found {productsForEditor.Count} products ready for the editor.");
+
+        Console.WriteLine("\nParsing complete. Press Enter to start adding these products to the editor...");
+        Console.ReadLine();
+
+        // --- Фаза 3: Работа редактора ---
+        Log.Print("--- [Phase 3: Editor] Starting to process products in the editor... ---");
+        stopwatch.Restart();
+
+        Log.Print("Enter the editor URL to start processing from:");
+        string? editorUrl = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(editorUrl))
+        {
+            editorUrl = _settingsManager.GetDecryptedAuthUrl();
+            Log.Warning($"Dont set editor url, use auth url: {editorUrl}");
+        }
+
+        var editorService = new EditorService(editorUrl);
+        bool editorSuccess = await editorService.ParseAsync(_scraper);
+
+        stopwatch.Stop();
+        Log.Print($"--- [Phase 3: Editor] Finished in {stopwatch.Elapsed.TotalSeconds:F2} seconds. ---");
+
+        // --- Фаза 4: Финальная верификация ---
+        if (editorSuccess)
+        {
+            Log.Print("--- [Phase 4: Final Verification] ---");
+            var addedProducts = await BaseProduct.LoadProductsByStatusAsync(true);
+            if (addedProducts.Count >= productsForEditor.Count)
+            {
+                Log.Print($"[SUCCESS] Test completed successfully! {productsForEditor.Count} products were processed and marked as added.");
+            }
+            else
+            {
+                Log.Error($"[PARTIAL FAILURE] Test finished, but verification failed. Expected at least {productsForEditor.Count} added products, but found {addedProducts.Count}.");
+            }
+        }
+        else
+        {
+            Log.Error("[FAILURE] The editor service reported a failure. Test did not complete successfully.");
+        }
+
+        await editorService.CloseAsync();
+    }
+
+    /// <summary>
+    /// Запускает тест добавления одного товара с предварительной автоматической авторизацией.
+    /// </summary>
+    public async Task RunSingleProductEditorTestAsync()
+    {
+        Log.Print("--- Starting Single Product Addition Test (with Auto-Login) ---");
+
+        // --- Фаза 1: Подготовка данных ---
+        Log.Print("--- [Phase 1: Preparation] Loading one 'Not Added' product... ---");
+        var productsForEditor = await BaseProduct.LoadProductsByStatusAsync(false);
+        if (productsForEditor.Count == 0)
+        {
+            Log.Error("No products with 'Not Added' status found on disk. Cannot run the test.");
+            return;
+        }
+
+        const string productTranslitedTitleToAdd = "centr-konstruirovaniya";
+        var productToAdd = productsForEditor.Where(x => x.TranslitedTitle == productTranslitedTitleToAdd).FirstOrDefault();
+        if (productToAdd == null)
+        {
+            Log.Error($"Product with translited title '{productTranslitedTitleToAdd}' not found in the list of products with 'Not Added' status. Cannot run the test.");
+            return;
+        }
+
+        Log.Print($"Selected product for test: '{productToAdd.Title}'");
+
+        // --- Фаза 2: Авторизация ---
+        Log.Print("--- [Phase 2: Authorization] Attempting to log in... ---");
+        var authUrl = _settingsManager.GetDecryptedAuthUrl();
+        var username = _settingsManager.GetDecryptedUsername();
+        var password = _settingsManager.GetDecryptedPassword();
+
+        if (string.IsNullOrWhiteSpace(authUrl) || string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+        {
+            Log.Error("Authorization credentials are not set in settings. Please configure them first.");
+            return;
+        }
+
+        var authInfo = new AuthorizationInfo(username, password);
+        var authService = new AuthorizationService(authUrl, authInfo);
+
+        // Выполняем авторизацию. Она оставит нас на готовой к работе странице редактора.
+        bool authSuccess = await authService.ParseAsync(_scraper);
+
+        if (!authSuccess)
+        {
+            Log.Error("Authorization failed. Cannot continue the test.");
+            return;
+        }
+        Log.Print("Authorization successful. Proceeding to add product.");
+
+        await authService.CloseAsync();
+
+        Log.Print($"--> Input the editor URL to start processing from (default '{authUrl}'):");
+        string? editorUrl = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(editorUrl))
+        {
+            editorUrl = authUrl;
+            Log.Warning($"Dont set editor url, use auth url: {editorUrl}");
+        }
+
+        // --- Фаза 3: Добавление товара ---
+        Log.Print("--- [Phase 3: Editor] Starting to process the single product... ---");
+        var stopwatch = Stopwatch.StartNew();
+
+        var editorService = new EditorService(editorUrl);
+
+        // Вызываем наш новый гибкий метод, передавая ему коллекцию из ОДНОГО товара
+        bool editorSuccess = await editorService.ProcessProductsAsync([productToAdd], _scraper);
+
+        stopwatch.Stop();
+        Log.Print($"--- [Phase 3: Editor] Finished in {stopwatch.Elapsed.TotalSeconds:F2} seconds. ---");
+
+        // --- Фаза 4: Финальная верификация ---
+        Log.Print("--- [Phase 4: Final Verification] ---");
+        if (editorSuccess)
+        {
+            // Проверяем прямо по объекту, был ли он помечен как добавленный
+            if (productToAdd.IsAdded)
+            {
+                Log.Print($"[SUCCESS] Test completed successfully! Product '{productToAdd.Title}' was processed and marked as added.");
+            }
+            else
+            {
+                Log.Error("[FAILURE] Editor service reported success, but the product was not marked as added on disk.");
+            }
+        }
+        else
+        {
+            Log.Error("[FAILURE] The editor service reported a failure. Product was not added.");
+        }
+
+        await editorService.CloseAsync();
+    }
+
+    /// <summary>
     /// Prompts the user for input with an optional default value.
     /// If the user presses Enter without input, returns the default value.
     /// </summary>
-    private string GetUserInput(string prompt, string? defaultValue = null, bool isPassword = false)
+    private static string GetUserInput(string prompt, string? defaultValue = null, bool isPassword = false)
     {
         if (!string.IsNullOrWhiteSpace(defaultValue) && !isPassword)
         {

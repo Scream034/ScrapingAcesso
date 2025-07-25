@@ -122,7 +122,7 @@ public static class GeminiService
     public static async Task<bool> GenerateContentAsync(BaseProduct product)
     {
         // Просто оборачиваем одиночный продукт в батч из одного элемента
-        return await GenerateContentForBatchAsync(new List<BaseProduct> { product });
+        return await GenerateContentForBatchAsync([product]);
     }
 
     private static string BuildBatchPrompt(ICollection<BaseProduct> products)

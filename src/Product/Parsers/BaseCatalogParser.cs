@@ -1,16 +1,19 @@
 namespace ScraperAcesso.Product.Parsers;
 
+using Microsoft.Playwright;
 using ScraperAcesso.Components;
+using ScraperAcesso.Components.Log;
 
 public abstract class BaseCatalogParser<ProductType> where ProductType : WebProduct
 {
-    public Uri URL { get; private set; }
-    
-    // Храним "инструкцию" по созданию продукта
-    private readonly Func<Uri, ProductType> _productFactory;
+    public Uri URL { get; protected set; }
+    public IPage? Page { get; protected set; }
+
+    protected readonly Func<Uri, ProductType> _productFactory;
+    protected readonly int? _maxProductsToParse;
 
     // Конструктор теперь принимает URL и фабрику
-    public BaseCatalogParser(Uri url, Func<Uri, ProductType> productFactory)
+    public BaseCatalogParser(Uri url, Func<Uri, ProductType> productFactory, int? maxProductsToParse = null)
     {
         if (string.IsNullOrWhiteSpace(url.ToString()))
         {
@@ -18,9 +21,20 @@ public abstract class BaseCatalogParser<ProductType> where ProductType : WebProd
         }
         URL = url;
         _productFactory = productFactory ?? throw new ArgumentNullException(nameof(productFactory));
+        _maxProductsToParse = maxProductsToParse;
     }
 
     public abstract Task<ICollection<ProductType>> ParseAsync(ChromiumScraper browser);
+
+    public async Task CloseAsync()
+    {
+        if (Page != null)
+        {
+            await Page.CloseAsync();
+            Page = null;
+            Log.Print($"Closed catalog page: {URL}");
+        }
+    }
 
     protected virtual async Task<ProductType?> ParseProductAsync(ChromiumScraper browser, Uri url)
     {
@@ -29,4 +43,5 @@ public abstract class BaseCatalogParser<ProductType> where ProductType : WebProd
         await product.ParseAsync(browser);
         return product;
     }
+
 }
