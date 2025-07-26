@@ -1,4 +1,5 @@
 ## What's this
+*Если вы заказчик то пожалуйста.. не воруйте код, а лучше поблагодарите за программу :D*
 
 **This is project to parsing sites and collect them into CSM Acesso (*Nethouse*).**
 
