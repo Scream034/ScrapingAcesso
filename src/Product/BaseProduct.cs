@@ -153,7 +153,7 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
 
     public static bool HasProductIO(in string translitedTitle)
     {
-        return Directory.Exists(IOPath.Combine(Constants.Path.Folder.Products, translitedTitle));
+        return File.Exists(IOPath.Combine(Constants.Path.Folder.Products, translitedTitle, Constants.Path.Name.File.ProductData));
     }
 
     /// <summary>

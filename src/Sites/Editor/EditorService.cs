@@ -43,8 +43,7 @@ public sealed class EditorService(string url) : BaseSiteParser
         public const string NavDescriptionLink = "//nav//a";
 
         public const string DeleteProductButton = "//a[@data-ng-click='$ctrl.delete()']";
-        // Нужно будет заменить на реальный, когда вы его поймаете.
-        public const string ServerErrorModal = "//div[contains(@class, '-notification') and contains(@class, 'error')]";
+        public const string ServerErrorModal = $"//div[contains(@class, '-notification') and contains(@class, 'error') and not(contains(@class, '{OperationExecutor.ProcessedMarkerClass}'))]";
         public const string ServerErrorModalText = "//div[contains(@class, '-notification-text')]";
 
         public static class ShortDescription
@@ -540,7 +539,7 @@ public sealed class EditorService(string url) : BaseSiteParser
             {
                 var validImage = validImages.ElementAtOrDefault(i);
                 if (validImage == null) break;
-    
+
                 await _executor.ExecuteAsync($"Upload Detailed Image #{i}/{validImages.Count - 1}",
                     () => UploadSingleImage(XPath.DetailedImageEditor.Target, validImage, altText, isDetailed: true));
             }
@@ -676,8 +675,10 @@ public sealed class EditorService(string url) : BaseSiteParser
 
     #region Helper Class: OperationExecutor
 
-    private sealed class OperationExecutor(IPage page)
+    private sealed class OperationExecutor(in IPage page)
     {
+        public const string ProcessedMarkerClass = "processed-by-scraper";
+
         private readonly IPage _page = page;
         private const int DefaultRetries = 5;
         private const int RetryDelayMs = 30000;
@@ -744,10 +745,14 @@ public sealed class EditorService(string url) : BaseSiteParser
                 try
                 {
                     var errorModal = _page.Locator(XPath.ServerErrorModal);
+
                     if (await errorModal.IsVisibleAsync())
                     {
                         string? errorText = (await errorModal.InnerTextAsync()).ToLower();
                         Log.Warning($"Warning watcher detected a visible error modal! Text: {errorText.Trim()}");
+
+                        await errorModal.EvaluateAsync($"(element) => element.classList.add('{ProcessedMarkerClass}')");
+                        Log.Print($"Marked error modal with class '{ProcessedMarkerClass}' to prevent re-triggering.");
 
                         // --- РАСПОЗНАВАНИЕ ТИПА ОШИБКИ ---
                         if (errorText == "максимальное количество картинок:12")
