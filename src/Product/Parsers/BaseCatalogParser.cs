@@ -36,12 +36,13 @@ public abstract class BaseCatalogParser<ProductType> where ProductType : WebProd
         }
     }
 
-    protected virtual async Task<ProductType?> ParseProductAsync(ChromiumScraper browser, Uri url)
+    protected virtual async Task<ProductParseResult> ParseProductAsync(ChromiumScraper browser, Uri url)
     {
         // Используем фабрику для создания экземпляра
         ProductType product = _productFactory(url);
-        await product.ParseAsync(browser);
-        return product;
+        var isParsed = await product.ParseAsync(browser);
+        return new ProductParseResult(product, isParsed);
     }
 
+    protected sealed record class ProductParseResult(ProductType Product, bool IsParsed);
 }

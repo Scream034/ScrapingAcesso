@@ -47,6 +47,11 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
             Log.Error($"Failed to parse product title, it is empty. URL: {URL}");
             return false;
         }
+        else if (HasProductIO(TranslitedTitle))
+        {
+            Log.Warning($"Product with title '{Title}' already exists in IO. Skipping.");
+            return false;
+        }
 
         var descriptionTask = GetDescriptionAsync(Page);
         var priceTask = GetPriceAsync(Page);

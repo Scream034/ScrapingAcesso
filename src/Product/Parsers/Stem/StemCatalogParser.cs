@@ -13,8 +13,8 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
     public static class XPath
     {
         public const string ToProductLink = "//div[@data-btn-config]/a";
-        public const string CurrentPage = "//div[@class='module-pagination__wrapper']/span";
-        public const string NextPageButton = "//a[@title='След.']";
+        public const string CurrentPage = "//div[@class='module-pagination__wrapper']/span[@class='cur module-pagination__item']";
+        public const string NextPageButton = "//div[contains(@class, 'arrows-pagination')]//a[@title='След.' and last()]";
     }
 
     public override async Task<ICollection<WebStemProduct>> ParseAsync(ChromiumScraper scraper)
@@ -65,12 +65,17 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
                 }
 
                 var productUrl = new Uri(URL, href);
-                var product = await ParseProductAsync(scraper, productUrl);
-                if (product != null)
+                var parseResult = await ParseProductAsync(scraper, productUrl);
+                if (parseResult.IsParsed)
                 {
-                    products.Add(product);
-                    await product.CloseAsync();
+                    products.Add(parseResult.Product);
                 }
+                else
+                {
+                    Log.Warning($"Failed to parse product on page {currentPage} with url {productUrl} ({parseResult.Product.TranslitedTitle}).");
+                }
+
+                await parseResult.Product.CloseAsync();
             }
 
             // Проверяем наличие следующей страницы и переходим
@@ -131,10 +136,19 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
             return 0;
         }
 
-        var currentPageElement = await Page.QuerySelectorAsync(XPath.CurrentPage);
-        if (currentPageElement == null)
+        IElementHandle? currentPageElement;
+        try
         {
-            Log.Warning("Current page element not found.");
+            currentPageElement = await Page.WaitForSelectorAsync(XPath.CurrentPage);
+            if (currentPageElement == null)
+            {
+                Log.Warning("Current page element not found.");
+                return 0;
+            }
+        }
+        catch (TimeoutException ex)
+        {
+            Log.Warning($"Current page element not found within the timeout period: {ex.Message}");
             return 0;
         }
 
@@ -168,7 +182,7 @@ public sealed class StemCatalogParser(Uri url, Func<Uri, WebStemProduct> product
         }
 
         await nextButton.ClickAsync();
-        await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        await Page.WaitForLoadStateAsync();
         return true;
     }
 }
