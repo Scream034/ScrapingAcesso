@@ -217,6 +217,89 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         return Task.CompletedTask;
     }
 
+    public async Task RunEditorModeAsync()
+    {
+        Log.Print("--- Starting Editor Mode ---");
+        var stopwatch = Stopwatch.StartNew();
+
+        // --- Фаза 1: Сбор данных от пользователя и подготовка ---
+        Log.Print("--- [Phase 1: Preparation] ---");
+
+        var authUrl = _settingsManager.GetDecryptedAuthUrl();
+        var editorUrl = GetUserInput("Enter the editor URL", authUrl);
+        if (string.IsNullOrWhiteSpace(editorUrl))
+        {
+            Log.Error("Editor URL cannot be empty. Operation canceled.");
+            return;
+        }
+
+        var countInput = GetUserInput("How many products to add? (Press Enter for all)", "all");
+        bool processAll = countInput.Equals("all", StringComparison.OrdinalIgnoreCase);
+        int? productCount = processAll ? null : (int.TryParse(countInput, out int c) ? c : null);
+
+        if (!processAll && (productCount == null || productCount <= 0))
+        {
+            Log.Error("Invalid number of products. Please enter a positive integer or 'all'.");
+            return;
+        }
+
+        // Загружаем товары, которые еще не были добавлены
+        var productsToProcess = await BaseProduct.LoadProductsByStatusAsync(false);
+        if (productsToProcess.Count == 0)
+        {
+            Log.Print("No products with 'Not Added' status found. Nothing to do.");
+            return;
+        }
+
+        // Отбираем нужное количество, если указано
+        var productsToUpload = productCount.HasValue
+            ? [.. productsToProcess.Take(productCount.Value)]
+            : productsToProcess;
+
+        Log.Print($"Found {productsToProcess.Count} products to add. Processing {productsToUpload.Count} of them.");
+
+        // --- Фаза 2: Автоматическая авторизация ---
+        Log.Print("--- [Phase 2: Automatic Authorization] ---");
+        var username = _settingsManager.GetDecryptedUsername();
+        var password = _settingsManager.GetDecryptedPassword();
+
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+        {
+            Log.Error("Authorization credentials are not set in settings. Please run 'Authorize' from the main menu first.");
+            return;
+        }
+
+        var authService = new AuthorizationService(authUrl, new AuthorizationInfo(username, password));
+        if (!await authService.ParseAsync(_scraper))
+        {
+            Log.Error("Automatic authorization failed. Please check your saved credentials.");
+            await authService.CloseAsync();
+            return;
+        }
+        Log.Print("Authorization successful.");
+
+        await authService.CloseAsync();
+
+        // --- Фаза 3: Запуск обработки в редакторе ---
+        Log.Print("--- [Phase 3: Processing in Editor] ---");
+        var editorService = new EditorService(editorUrl);
+
+        var editorSuccess = await editorService.ProcessProductsAsync(productsToUpload, _scraper);
+        if (editorSuccess)
+        {
+            Log.Print("All products were successfully processed in the editor.");
+        }
+        else
+        {
+            Log.Error("Some products failed to be processed in the editor.");
+        }
+
+        await editorService.CloseAsync();
+
+        stopwatch.Stop();
+        Log.Print($"--- Editor Mode Finished. Total time: {stopwatch.Elapsed.TotalMinutes:F2} minutes. ---");
+    }
+
     /// <summary>
     /// Start the test for AI generation of SEO content.
     /// </summary>

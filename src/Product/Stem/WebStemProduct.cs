@@ -131,9 +131,9 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
         if (elements.Count == 0) return imageUrls;
 
         var baseUrl = new Uri(page.Url);
-        for (var i = 0; i < MaxImageCount; i++)
+        for (var i = 0; i < MaxImagesCount; i++)
         {
-            var element = elements[i];
+            var element = elements.ElementAtOrDefault(i);
             if (element == null) break;
 
             var src = await element.GetAttributeAsync("data-src");

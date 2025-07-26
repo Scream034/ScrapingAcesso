@@ -79,17 +79,18 @@ public static class Program
         var scraperMenu = MenuManager.AddSubMenu("Scraper Menu");
         scraperMenu.AddAction("Parse Stem Products", actions.ParseStemProductsAsync);
 
+        var editorMenu = MenuManager.AddSubMenu("Editor Mode");
+        editorMenu.AddAction("Add Products to Site", actions.RunEditorModeAsync);
+
         var aiMenu = MenuManager.AddSubMenu("AI Actions");
         aiMenu.AddAction("Generate SEO for all products", actions.GenerateSeoForAllRawProductsAsync);
 
-        // Tests sub menu
         var testMenu = MenuManager.AddSubMenu("Tests");
         testMenu.AddAction("Test AI Generation (Single)", actions.TestAiGenerationAsync);
         testMenu.AddAction("Test AI Generation (Batch)", actions.TestAiBatchGenerationAsync);
-        testMenu.AddAction("Run Full E2E Cycle Test (Must be login)", actions.RunFullCycleTestAsync);
+        testMenu.AddAction("Run Full E2E Cycle Test", actions.RunFullCycleTestAsync);
         testMenu.AddAction("Test Single Product Addition (Auto-Login)", actions.RunSingleProductEditorTestAsync);
 
-        // Settings sub menu
         var settingsMenu = MenuManager.AddSubMenu("Settings");
         settingsMenu.AddAction("Configure Gemini API Key", actions.ConfigureGeminiApiKey);
         settingsMenu.AddAction("Toggle Auto-SEO on Parse", actions.ToggleAutoSeoGeneration);
@@ -102,10 +103,46 @@ public static class Program
 
     private static async Task ConfigureBrowserContexts(ChromiumScraper scraper)
     {
-        Log.Print("Configuring browser contexts...");
+        Log.Print("Configuring browser contexts with animation disabling...");
+
+        // --- CSS-правила, которые мы хотим внедрить ---
+        const string styles = @"
+            *, *::before, *::after {
+              -webkit-transition: none !important;
+              -moz-transition: none !important;
+              -o-transition: none !important;
+              -ms-transition: none !important;
+              transition: none !important;
+              -webkit-animation: none !important;
+              -moz-animation: none !important;
+              -o-animation: none !important;
+              -ms-animation: none !important;
+              animation: none !important;
+              scroll-behavior: auto !important;
+              transition-delay: 0s !important;
+              animation-delay: 0s !important;
+            }";
+
+        // --- JAVASCRIPT-КОД, КОТОРЫЙ ВНЕДРЯЕТ НАШИ СТИЛИ В <HEAD> ---
+        // Он создает тег <style>, наполняет его нашим CSS и добавляет в DOM.
+        // Это гарантирует, что стили применятся до полной загрузки страницы.
+        const string scriptToInject = $$"""
+            console.log('Animation-disabling script injecting...');
+            document.addEventListener('DOMContentLoaded', function() 
+            {
+                console.log('Document loaded, injecting styles...');
+                const style = document.createElement('style');
+                style.type = 'text/css';
+                style.innerHTML = `{{styles}}`;
+                document.head.append(style);
+                console.log('Animation-disabling script injected', style);
+            });
+        """;
+        // -----------------------------------------------------------------
 
         // Context for catalog (HTML)
         var catalogContext = await scraper.CreateContextAsync(Constants.Contexts.CatalogParser);
+        await catalogContext.AddInitScriptAsync(scriptToInject);
         await catalogContext.RouteAsync("**/*", static route =>
         {
             if (route.Request.ResourceType is not "document") route.AbortAsync();
@@ -114,6 +151,7 @@ public static class Program
 
         // Context for product (HTML)
         var productContext = await scraper.CreateContextAsync(Constants.Contexts.ProductParser);
+        await productContext.AddInitScriptAsync(scriptToInject);
         await productContext.RouteAsync("**/*", static route =>
         {
             var type = route.Request.ResourceType;
@@ -123,7 +161,8 @@ public static class Program
 
         // Context for editor (HTML)
         var editorContext = await scraper.CreateContextAsync(Constants.Contexts.Editor);
+        await editorContext.AddInitScriptAsync(scriptToInject);
 
-        Log.Print("Contexts configured successfully.");
+        Log.Print("Contexts configured successfully. Animation-disabling script will be injected into every page.");
     }
 }

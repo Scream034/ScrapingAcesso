@@ -3,6 +3,7 @@ namespace ScraperAcesso.Sites.Editor;
 using System.Diagnostics;
 using System.IO;
 using System.Numerics;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Playwright;
@@ -16,9 +17,11 @@ public sealed class EditorService(string url) : BaseSiteParser
     public static readonly List<string> ImageFormats = ["jpg", "jpeg", "png"];
     public static readonly Vector2 MinImageSize = new(156, 120);
     public static readonly Vector2 MaxImageSize = new(10000, 10000);
-    public const uint MaxImageSizeInBytes = 20_971_520; // 20 MB
+    public const uint MaxImageSizeInBytes = 5 * 1024 * 1024; // 5 MB
     public const ushort MaxSEOAltSymbols = 100;
-    public const ushort MaxUrlLength = 100;
+    public const ushort MaxUrlLength = 64;
+
+    private const int MaxFailuresPerProduct = 3;
 
     public static class XPath
     {
@@ -29,6 +32,7 @@ public sealed class EditorService(string url) : BaseSiteParser
         public const string SaveProductButton = "//footer//button[@class='-btn -btn-complete' and @data-indication-click]";
         public const string TitleInput = "//input[@data-ng-model='$ctrl.product.name']";
         public const string UrlInput = "//input[@data-ng-model='$ctrl.product.slug']";
+        public const string ValidUrlInput = "//input[@data-ng-model='$ctrl.product.slug' and contains(@class, 'ng-valid-slug-exist')]";
         public const string PriceInput = "//input[@data-ng-model='$ctrl.product.cost']";
         public const string CountInput = "//input[@data-ng-model='$ctrl.product.balance']";
         public const string SEOTitleInput = "//input[@data-ng-model='$ctrl.product.seoTitle']";
@@ -37,6 +41,11 @@ public sealed class EditorService(string url) : BaseSiteParser
 
         public const string NavDescriptionContainer = "//div[@data-nt-menu and contains(@class, 'menu-horizontal')][2]";
         public const string NavDescriptionLink = "//nav//a";
+
+        public const string DeleteProductButton = "//a[@data-ng-click='$ctrl.delete()']";
+        // Нужно будет заменить на реальный, когда вы его поймаете.
+        public const string ServerErrorModal = "//div[contains(@class, '-notification') and contains(@class, 'error')]";
+        public const string ServerErrorModalText = "//div[contains(@class, '-notification-text')]";
 
         public static class ShortDescription
         {
@@ -87,6 +96,11 @@ public sealed class EditorService(string url) : BaseSiteParser
             public const string SaveButton = "//button[@nt-indicator='isSave' or contains(., 'Сохранить')]";
         }
 
+        public static class ValidInputClass
+        {
+            public const string URLInput = "ng-valid-slug-exist";
+        }
+
         public static class InvalidInputClass
         {
             /// <summary>
@@ -103,10 +117,8 @@ public sealed class EditorService(string url) : BaseSiteParser
 
     public override string URL { get; } = url;
     public override IPage? Page { get; protected set; }
+    private OperationExecutor? _executor;
 
-    /// <summary>
-    /// Точка входа по умолчанию. Загружает ВСЕ необработанные товары и запускает их обработку.
-    /// </summary>
     public override async Task<bool> ParseAsync(ChromiumScraper scraper)
     {
         var productsToProcess = await BaseProduct.LoadProductsByStatusAsync(false);
@@ -115,11 +127,10 @@ public sealed class EditorService(string url) : BaseSiteParser
             Log.Print("All products are already added. Nothing to do.");
             return true;
         }
-        // Вызываем новый основной метод с полным списком товаров
         return await ProcessProductsAsync(productsToProcess, scraper);
     }
 
-    public async Task<bool> ProcessProductsAsync(ICollection<BaseProduct> productsToProcess, ChromiumScraper browser)
+    public async Task<bool> ProcessProductsAsync(ICollection<BaseProduct> initialProducts, ChromiumScraper browser)
     {
         if (Page == null)
         {
@@ -127,160 +138,153 @@ public sealed class EditorService(string url) : BaseSiteParser
             if (Page == null || !await OpenEditorPage(Page)) return false;
         }
 
-        Log.Print($"Starting to process {productsToProcess.Count} products...");
+        _executor = new OperationExecutor(Page);
+
+        // --- НОВАЯ ЛОГИКА ОЧЕРЕДИ ---
+        var productQueue = new List<BaseProduct>(initialProducts);
+        var failureTracker = new Dictionary<BaseProduct, int>();
+        int totalProducts = productQueue.Count;
         int successCount = 0;
+        int permanentlyFailedCount = 0;
         var totalStopwatch = Stopwatch.StartNew();
 
-        foreach (var product in productsToProcess)
-        {
-            var productStopwatch = Stopwatch.StartNew();
-            Log.Print($"--- Processing product: '{product.Title}' ---");
+        Log.Print($"--- Starting to process a queue of {totalProducts} products... ---");
 
-            try
+        // Используем while, так как размер коллекции будет меняться
+        while (productQueue.Count > 0)
+        {
+            // Берем первый товар из очереди
+            var currentProduct = productQueue[0];
+            productQueue.RemoveAt(0); // И сразу удаляем его, чтобы избежать бесконечного цикла при ошибках
+
+            var productStopwatch = Stopwatch.StartNew();
+            Log.Print($"--- Processing product: '{currentProduct.Title}' ({successCount + 1}/{totalProducts}) ---");
+
+            bool success = await ProcessSingleProductAsync(currentProduct);
+
+            if (success)
             {
-                // Запускаем полный цикл добавления для одного товара
-                bool success = await ProcessSingleProductAsync(product);
-                if (success)
+                await currentProduct.MarkAsAddedAsync();
+                successCount++;
+                productStopwatch.Stop();
+                Log.Print($"--- Successfully processed '{currentProduct.Title}' in {productStopwatch.Elapsed.TotalSeconds:F2}s ---");
+            }
+            else
+            {
+                // Увеличиваем счетчик неудач для этого товара
+                failureTracker.TryGetValue(currentProduct, out int currentFailures);
+                currentFailures++;
+                failureTracker[currentProduct] = currentFailures;
+
+                Log.Error($"--- Failed to process product '{currentProduct.Title}'. Failure count: {currentFailures}/{MaxFailuresPerProduct}. ---");
+
+                if (currentFailures >= MaxFailuresPerProduct)
                 {
-                    await product.MarkAsAddedAsync(); // Помечаем как добавленный только в случае полного успеха
-                    successCount++;
-                    productStopwatch.Stop();
-                    Log.Print($"--- Successfully processed '{product.Title}' in {productStopwatch.Elapsed.TotalSeconds:F2}s ---");
+                    // Товар "безнадежен"
+                    permanentlyFailedCount++;
+                    Log.Error($"--- Product '{currentProduct.Title}' has failed too many times and will be permanently skipped. ---");
+                    // Ничего не делаем, он уже удален из очереди
                 }
                 else
                 {
-                    Log.Error($"--- Failed to process product '{product.Title}'. Skipping. ---");
+                    // Даем товару еще один шанс, добавляя его в конец очереди
+                    Log.Warning($"--- Moving '{currentProduct.Title}' to the back of the queue. ---");
+                    productQueue.Add(currentProduct);
                 }
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"A critical error occurred while processing '{product.Title}'. Error: {ex.Message}");
-                // Попробуем перезагрузить страницу, чтобы восстановиться для следующего товара
-                await OpenEditorPage(Page);
             }
         }
 
         totalStopwatch.Stop();
-        Log.Print($"--- Job Finished. Successfully added {successCount}/{productsToProcess.Count} products in {totalStopwatch.Elapsed.TotalMinutes:F2} minutes. ---");
+        Log.Print($"--- Job Finished in {totalStopwatch.Elapsed.TotalMinutes:F2} minutes. ---");
+        Log.Print($"--- Results: {successCount} successful, {permanentlyFailedCount} permanently failed, {totalProducts} total. ---");
+
+        // Считаем задачу успешной, если хотя бы один товар был добавлен.
         return successCount > 0;
     }
 
 
     private async Task<bool> ProcessSingleProductAsync(BaseProduct product)
     {
+        bool isInEditorMode = false;
         try
         {
-            Log.Print("Hover and click on the 'Search Catalog'...");
-            var searchCatalog = Page!.Locator(XPath.SearchInCatalog);
-            await searchCatalog.HoverAsync();
-            await Task.Delay(300);
-            await searchCatalog.ClickAsync();
-            await Task.Delay(225);
+            await _executor!.ExecuteAsync("Navigate to Add Product Form", async () =>
+            {
+                Log.Print("Navigating to product creation form...");
+                var searchCatalog = Page!.Locator(XPath.SearchInCatalog);
+                await searchCatalog.HoverAsync();
+                await Task.Delay(300);
+                await searchCatalog.ClickAsync();
+                await Task.Delay(225);
+                await Page!.Locator(XPath.AddProductButton).ClickAsync();
+                isInEditorMode = true;
+            });
 
-            Log.Print("Click on the 'Add Product'...");
-            var addProductButton = Page!.Locator(XPath.AddProductButton);
-            await Page!.Locator(XPath.AddProductButton).ClickAsync();
-            addProductButton = null;
-
-            // 1. Заполнение основных полей
-            Log.Print("--- Step 1/5: Filling Main Details (JS Mode) ---");
-            await FillMainDetailsAsync(product);
-
-            // 2. Заполнение описаний
-            Log.Print("--- Step 2/5: Filling Descriptions (Human-Like Mode) ---");
-            await FillDescriptionsAsync(product);
-
-            // 3. Загрузка изображений и установка Alt-тегов
-            Log.Print("--- Step 3/5: Uploading Images (Event Mode) ---");
+            await _executor.ExecuteAsync("Fill Main Details", () => FillMainDetailsAsync(product));
+            await _executor.ExecuteAsync("Fill Descriptions", () => FillDescriptionsAsync(product));
             await UploadAllImagesAsync(product);
+            await _executor.ExecuteAsync("Fill SEO Data", () => FillSeoDataAsync(product));
+            await _executor.ExecuteAsync("Final Save", SaveProductAsync, 2);
 
-            // 4. Заполнение SEO-данных
-            Log.Print("--- Step 4/5: Filling SEO Data (JS Mode) ---");
-            await FillSeoDataAsync(product);
-
-            // 5. Сохранение всего продукта
-            Log.Print("--- Step 5/5: Saving Product (Event Mode) ---");
-            var saveButton = Page.Locator(XPath.SaveProductButton);
-            await saveButton.WaitForAsync();
-
-            Log.Print($"Waiting for the product {Page.Url} to be saved...");
-            await saveButton.ClickAsync();
-
-            await Page.Locator(XPath.IsLoadingSpinner).WaitForAsync(new() { State = WaitForSelectorState.Hidden, Timeout = 100_000 });
-
-            Log.Print("Product saved successfully.");
+            Log.Print($"Atomic operation for '{product.Title}' completed successfully.");
             return true;
         }
         catch (Exception ex)
         {
-            Log.Error($"A critical, unhandled error occurred while processing '{product.Title}'. Activating emergency save protocol.");
-            Log.Error($"Error Details: {ex.Message}");
-
-            // --- АВАРИЙНОЕ СОХРАНЕНИЕ ---
-            bool emergencySaveSuccess = await EmergencySaveWithErrorAsync(product, ex);
-
-            if (emergencySaveSuccess)
+            Log.Error($"CRITICAL FAILURE within single product processing for '{product.Title}'. Activating cleanup.");
+            Log.Error($"Root cause: {ex.Message}");
+            if (isInEditorMode)
             {
-                Log.Warning("Emergency save succeeded. Product was saved with an error message in its title for manual review.");
+                await TryDeleteProductAsync();
             }
-            else
+            if (ex.Message.Contains("Target page, context or browser has been closed"))
             {
-                Log.Error($"IMPORTANT. The product '{product.Title}' could not be saved at all. Manual intervention is required immediately.");
+                throw;
             }
-
-            // Возвращаем false, т.к. основной процесс не был успешным
+            // Возвращаем false, чтобы внешняя логика очереди могла это обработать
             return false;
         }
     }
 
-    private async Task<bool> EmergencySaveWithErrorAsync(BaseProduct product, Exception exception)
+    private async Task SaveProductAsync()
+    {
+        Log.Print("Final step: Clicking 'Save' button.");
+        await Page!.Locator(XPath.SaveProductButton).ClickAsync();
+        // Ожидаем возврата на главную страницу редактора, это и есть подтверждение сохранения
+        await Page.Locator(XPath.SearchInCatalog).WaitForAsync(new() { Timeout = 90_000 });
+        Log.Print("Product saved, returned to the main editor page.");
+    }
+
+    private async Task<bool> TryDeleteProductAsync()
     {
         try
         {
-            Log.Print("--- Emergency Save Protocol Activated ---");
-
-            // Формируем аварийное название
-            string errorPrefix = "[ERROR-404] ";
-            string errorMessage = exception.Message.Length > 150 ? exception.Message[..150] : exception.Message;
-            string rawTitle = $"{errorPrefix}{errorMessage} | {product.Title}";
-
-            // Обрезаем до максимальной длины поля
-            string emergencyTitle = rawTitle.Length > BaseProduct.MaxTitleLength
-                ? rawTitle[..BaseProduct.MaxTitleLength]
-                : rawTitle;
-
-            Log.Print($"Generated emergency title: '{emergencyTitle}'");
-
-            // Пытаемся заполнить только поле с названием
-            var titleInput = Page!.Locator(XPath.TitleInput);
-            // Проверяем, видимо ли поле. Если нет, то, возможно, мы даже не на странице редактора.
-            if (!await titleInput.IsVisibleAsync())
+            Log.Warning("--- Emergency Delete Protocol Activated ---");
+            var deleteButton = Page!.Locator(XPath.DeleteProductButton);
+            if (!await deleteButton.IsVisibleAsync())
             {
-                Log.Error("Title input is not visible. Cannot perform emergency save. The page might be in an invalid state.");
+                Log.Error("Delete button is not visible. Cannot perform emergency delete. Reloading page to exit editor.");
+                // Если кнопки удаления нет, возможно, мы на главной. Попробуем перезагрузиться.
+                await OpenEditorPage(Page);
                 return false;
             }
 
-            await FillInputViaJS(XPath.TitleInput, emergencyTitle);
-
-            // Пытаемся нажать "Сохранить"
-            var saveButton = Page.Locator(XPath.SaveProductButton);
-            if (!await saveButton.IsVisibleAsync())
+            Page.Dialog += async (_, dialog) =>
             {
-                Log.Error("Save button is not visible. Cannot perform emergency save.");
-                return false;
-            }
+                Log.Warning($"Browser dialog opened with message: '{dialog.Message}'. Accepting...");
+                await dialog.AcceptAsync();
+            };
 
-            await saveButton.ClickAsync();
+            Log.Print("Clicking delete button and waiting for browser confirmation dialog...");
+            await deleteButton.ClickAsync();
 
-            // Ждем завершения
-            await Page.WaitForSelectorAsync(XPath.AddProductButton, new() { State = WaitForSelectorState.Attached, Timeout = 90_000 });
-
+            await Page.Locator(XPath.AddProductButton).WaitForAsync(new() { Timeout = 30000 });
+            Log.Print("Emergency delete successful. Unsaved product has been removed.");
             return true;
         }
-        catch (Exception emergencyEx)
+        catch (Exception ex)
         {
-            // Если даже аварийное сохранение не удалось
-            Log.Error($"FATAL: The emergency save procedure itself failed. Error: {emergencyEx.Message}");
+            Log.Error($"FATAL: The emergency delete procedure itself failed. Error: {ex.Message}");
             return false;
         }
     }
@@ -343,32 +347,58 @@ public sealed class EditorService(string url) : BaseSiteParser
 
         var urlInput = Page!.Locator(XPath.UrlInput);
         string currentSlug = baseSlug;
-        int attempt = 2;
+        uint attempt = 2;
 
         while (true)
         {
-            await FillInputViaJS(XPath.UrlInput, currentSlug);
-            // Даем AngularJS время на асинхронную валидацию (очень важно!)
-            await Task.Delay(250);
+            await urlInput.FillAsync(currentSlug);
+            try
+            {
+                if (await Page.WaitForSelectorAsync(XPath.ValidUrlInput, new() { Timeout = 3000, State = WaitForSelectorState.Attached }) == null)
+                {
+                    Log.Warning($"URL slug '{currentSlug}' ({currentSlug.Length}) is invalid (Second condition), fixing...");
+                }
+                else
+                {
+                    Log.Print($"URL slug '{currentSlug}' ({currentSlug.Length}) is valid (First condition).");
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"URL slug '{currentSlug}' ({currentSlug.Length}) is invalid (First condition: '{ex.Message}'), fixing...");
+            }
 
             // Проверяем, появился ли у поля класс ошибки о дубликате
             string? classes = await urlInput.GetAttributeAsync("class");
-            if (classes != null && classes.Contains(XPath.InvalidInputClass.URLIsExist))
+            if (classes != null)
             {
-                Log.Warning($"URL slug '{currentSlug}' already exists. Generating a new one...");
+                if (classes.Contains(XPath.InvalidInputClass.URLIsExist))
+                {
+                    Log.Warning($"URL slug '{currentSlug}' already exists. Generating a new one...");
 
-                // Формируем новый slug с суффиксом, например, "my-product-2"
-                string suffix = $"-{attempt++}";
-                int availableLength = MaxUrlLength - suffix.Length;
-                // Укорачиваем базу, если нужно, чтобы влез суффикс
-                string trimmedBase = baseSlug.Length > availableLength ? baseSlug[..availableLength] : baseSlug;
-                currentSlug = trimmedBase + suffix;
+                    // Формируем новый slug с суффиксом, например, "my-product-2"
+                    string suffix = $"-{attempt++}";
+                    int availableLength = MaxUrlLength - suffix.Length;
+                    // Укорачиваем базу, если нужно, чтобы влез суффикс
+                    string trimmedBase = baseSlug.Length > availableLength ? baseSlug[..availableLength] : baseSlug;
+                    currentSlug = trimmedBase + suffix;
+                }
+                else if (classes.Contains(XPath.ValidInputClass.URLInput))
+                {
+                    Log.Print($"URL slug '{currentSlug}' ({currentSlug.Length}) is valid (Second condition).");
+                    break;
+                }
+                else
+                {
+                    Log.Print($"URL slug '{currentSlug}' is valid and has been set.");
+                }
             }
             else
             {
-                // Ошибки нет, URL свободен
-                Log.Print($"URL slug '{currentSlug}' is valid and has been set.");
-                break;
+                Log.Error($"FATAL: Failed to get classes for URL input");
+                attempt++;
+                await Task.Delay(3000);
             }
         }
     }
@@ -427,9 +457,9 @@ public sealed class EditorService(string url) : BaseSiteParser
                     var boldButton = Page.Locator(XPath.FullDescription.Target).Locator(XPath.FullDescription.BoldButton);
                     await boldButton.ClickAsync(); // Добавляем жирный шрифт
                     await editableBody.PressAsync("End"); // Снова в конец
-                    await Task.Delay(400); // Даем время на обработку
+                    await Task.Delay(350); // Даем время на обработку
                     await boldButton.ClickAsync(); // Отменяем выделение
-                    await Task.Delay(400); // Даем время на обработку
+                    await Task.Delay(350); // Даем время на обработку
                     Log.Print("Bold style applied.");
                 }
                 catch (Exception ex)
@@ -438,6 +468,7 @@ public sealed class EditorService(string url) : BaseSiteParser
                 }
 
                 // 4. Вставляем сами атрибуты
+                await editableBody.PressAsync("Enter");
                 await editableBody.PressAsync("Enter");
                 await editableBody.PressSequentiallyAsync(attributes, sequentiallyOptions);
                 Log.Print("Attributes text filled.");
@@ -483,82 +514,102 @@ public sealed class EditorService(string url) : BaseSiteParser
 
     private async Task UploadAllImagesAsync(BaseProduct product)
     {
-        if (product.AllImages == null || product.AllImages.Count == 0) return;
-        Log.Print("Starting image upload process (Event Mode)...");
+        if (product.AllImages == null || product.AllImages.Count == 0)
+        {
+            Log.Print("No images found for this product. Skipping image upload.");
+            return;
+        }
 
         List<string> validImages = FilterValidImages(product.AllImages);
-        if (validImages.Count == 0) return;
+        if (validImages.Count == 0)
+        {
+            Log.Print("No valid images found after filtering. Skipping image upload.");
+            return;
+        }
 
         string altText = product.Title.Length > MaxSEOAltSymbols ? product.Title[..MaxSEOAltSymbols] : product.Title;
 
-        // 1. Загрузка превью
-        await UploadSingleImageAsync(Page!.Locator(XPath.PreviewImageEditor.Target), XPath.PreviewImageEditor.UploadButton, validImages[0]);
-        await SetAltTextAsync(Page!.Locator(XPath.PreviewImageEditor.Target), XPath.PreviewImageEditor.AltButton, altText);
+        // Загрузка превью - это критическая операция
+        await _executor!.ExecuteAsync("Upload Preview Image",
+            () => UploadSingleImage(XPath.PreviewImageEditor.Target, validImages[0], altText));
 
-        // 2. Загрузка детальных изображений
-        var detailedImagesContainer = Page.Locator(XPath.DetailedImageEditor.Target);
+        // Загрузка детальных изображений
         for (int i = 1; i < validImages.Count; i++)
         {
-            var validImage = validImages[i];
-
-            Log.Print($"Uploading image {i + 1} ({validImage}) of {validImages.Count}...");
-            await detailedImagesContainer.Locator(XPath.DetailedImageEditor.UploadButton).DispatchEventAsync("click");
-
-            var imageWindow = Page.Locator(XPath.ImageWindowEditor.Target);
-            await imageWindow.WaitForAsync();
-            await imageWindow.Locator(XPath.ImageWindowEditor.SelectInput).SetInputFilesAsync(validImage);
-            // Сразу же сохранит, поэтому ждём закрытия (пока загрузятся на сервер редактора)
-            Log.Print("Image uploaded. Waiting for image to be processed...");
-            await imageWindow.WaitForAsync(new() { State = WaitForSelectorState.Hidden, Timeout = 200_000 });
-
-            var lastImageEditor = detailedImagesContainer.Locator(XPath.DetailedImageEditor.ImageEditorInstance).Last;
-            await SetAltTextAsync(lastImageEditor, "self", altText);
+            try
+            {
+                var validImage = validImages.ElementAtOrDefault(i);
+                if (validImage == null) break;
+    
+                await _executor.ExecuteAsync($"Upload Detailed Image #{i}/{validImages.Count - 1}",
+                    () => UploadSingleImage(XPath.DetailedImageEditor.Target, validImage, altText, isDetailed: true));
+            }
+            catch (OperationExecutor.ExceedImagesLimitException ex)
+            {
+                // Ловим КОНКРЕТНУЮ ошибку о превышении лимита
+                Log.Warning(ex.Message);
+                Log.Warning("Maximum image limit reached. Stopping further image uploads for this product.");
+                break; // Прерываем цикл, но НЕ считаем это критической ошибкой
+            }
         }
     }
 
-    private async Task UploadSingleImageAsync(ILocator container, string uploadButtonXPath, string imagePath)
+    private async Task UploadSingleImage(string containerXPath, string imagePath, string altText, bool isDetailed = false)
     {
-        await container.Locator(uploadButtonXPath).DispatchEventAsync("click");
+        Log.Print($"Uploading image '{imagePath}'...");
+        var container = Page!.Locator(containerXPath);
 
-        Log.Print($"Single image {imagePath} uploading...");
-        var imageWindow = Page!.Locator(XPath.ImageWindowEditor.Target);
-        await imageWindow.WaitForAsync();
+        // Для детальных фото мы ищем последнюю "пустую" ячейку, для превью - единственную
+        var rawImageEditorTarget = isDetailed ? container.Locator(XPath.DetailedImageEditor.RawImageEditorInstance).Last : container;
+
+        // 1. Открываем окно загрузки
+        var uploadButton = isDetailed ? rawImageEditorTarget.Locator(XPath.DetailedImageEditor.UploadButton) : rawImageEditorTarget.Locator(XPath.PreviewImageEditor.UploadButton);
+        await uploadButton.DispatchEventAsync("click");
+
+        var imageWindow = Page.Locator(XPath.ImageWindowEditor.Target);
+        await imageWindow.WaitForAsync(new() { State = WaitForSelectorState.Visible });
+
+        // 2. Выбираем файл и сохраняем
         await imageWindow.Locator(XPath.ImageWindowEditor.SelectInput).SetInputFilesAsync(imagePath);
 
-        Log.Print($"Single image uploaded. Waiting for image to be processed...");
-        await imageWindow.Locator(XPath.ImageWindowEditor.SaveButton).ClickAsync(new() { Timeout = 200_000 });
+        // Для детальных изображений кнопка "сохранить" не нужна, окно закрывается само
+        if (!isDetailed)
+        {
+            Log.Print("Clicking save button for preview image...");
+            var saveButton = imageWindow.Locator(XPath.ImageWindowEditor.SaveButton);
+            await saveButton.ClickAsync(new() { Timeout = 180_000 });
+        }
 
-        Log.Print("Closing image window...");
-        await imageWindow.WaitForAsync(new() { State = WaitForSelectorState.Hidden, Timeout = 200_000 });
-    }
+        Log.Print("Waiting for image upload to complete...");
+        await imageWindow.WaitForAsync(new() { State = WaitForSelectorState.Hidden, Timeout = 180_000 });
+        Log.Print($"Image '{Path.GetFileName(imagePath)}' uploaded.");
 
-    private async Task SetAltTextAsync(ILocator container, string altButtonXPath, string altText)
-    {
-        Log.Print($"Setting alt text as {altButtonXPath}...");
+        // 3. Устанавливаем Alt-текст
+        Log.Print("Waiting for image editor to appear...");
+        var imageEditorTarget = isDetailed ? Page.Locator(XPath.DetailedImageEditor.ImageEditorInstance).Last : rawImageEditorTarget;
 
-        ILocator altButton = (altButtonXPath == "self")
-            ? container.Locator(XPath.PreviewImageEditor.AltButton)
-            : container.Locator(altButtonXPath);
-
+        Log.Print("Setting alt text...");
+        var altButton = imageEditorTarget.Locator(XPath.PreviewImageEditor.AltButton);
         await altButton.DispatchEventAsync("click");
-        var altWindow = Page!.Locator(XPath.AltWindowEditor.Target);
-        await altWindow.WaitForAsync();
-        await altWindow.Locator(XPath.AltWindowEditor.Input).EvaluateAsync("(element, value) => { element.value = value; element.dispatchEvent(new Event('input', { bubbles: true })); }", altText);
-        await altWindow.Locator(XPath.AltWindowEditor.SaveButton).DispatchEventAsync("click");
-        await altWindow.WaitForAsync(new() { State = WaitForSelectorState.Hidden });
 
+        var altWindow = Page.Locator(XPath.AltWindowEditor.Target);
+        await altWindow.WaitForAsync(new() { State = WaitForSelectorState.Visible });
+
+        await altWindow.Locator(XPath.AltWindowEditor.Input).FillAsync(altText);
+        await altWindow.Locator(XPath.AltWindowEditor.SaveButton).ClickAsync();
+        await altWindow.WaitForAsync(new() { State = WaitForSelectorState.Hidden });
         Log.Print("Alt text set.");
     }
 
     private static List<string> FilterValidImages(List<string> imagePaths)
     {
-        Log.Print($"Filtering images. Initial count: {imagePaths.Count}. Max allowed: {BaseProduct.MaxImageCount}.");
+        Log.Print($"Filtering images. Initial count: {imagePaths.Count}. Max allowed: {BaseProduct.MaxImagesCount}.");
         var validImages = new List<string>();
         foreach (var path in imagePaths)
         {
-            if (validImages.Count >= BaseProduct.MaxImageCount)
+            if (validImages.Count >= BaseProduct.MaxImagesCount)
             {
-                Log.Warning($"Image limit ({BaseProduct.MaxImageCount}) reached. Skipping remaining images.");
+                Log.Warning($"Image limit ({BaseProduct.MaxImagesCount}) reached. Skipping remaining images.");
                 break;
             }
 
@@ -622,4 +673,114 @@ public sealed class EditorService(string url) : BaseSiteParser
         Log.Print("Editor interface loaded successfully.");
         return true;
     }
+
+    #region Helper Class: OperationExecutor
+
+    private sealed class OperationExecutor(IPage page)
+    {
+        private readonly IPage _page = page;
+        private const int DefaultRetries = 5;
+        private const int RetryDelayMs = 30000;
+        private const int AdditionRetryDelayMs = 5000;
+
+        public async Task ExecuteAsync(string operationName, Func<Task> operation, int maxRetries = DefaultRetries)
+        {
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                using var cts = new CancellationTokenSource();
+                try
+                {
+                    Log.Print($"---- Starting Operation: '{operationName}' (Attempt {attempt}/{maxRetries}) ----");
+
+                    var operationTask = operation();
+                    var errorWatcherTask = WatchForErrorsAsync(cts.Token);
+
+                    var completedTask = await Task.WhenAny(operationTask, errorWatcherTask);
+                    cts.Cancel();
+                    await completedTask;
+
+                    Log.Print($"--- Operation '{operationName}' completed successfully. ---");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // Если это ошибка, которую нужно игнорировать (как лимит картинок),
+                    // она будет поймана выше, в вызывающем коде.
+                    // Сюда дойдут только те ошибки, которые требуют повтора или полного провала.
+
+                    Log.Warning($"Operation '{operationName}' failed on attempt {attempt}. Reason: {ex.GetType().Name}: {ex.Message}");
+
+                    if (ex is ServerErrorException)
+                    {
+                        if (attempt < maxRetries)
+                        {
+                            int delayMs = RetryDelayMs + AdditionRetryDelayMs * attempt;
+                            Log.Warning($"Server error detected. Waiting {delayMs / 1000}s before retrying...");
+                            await Task.Delay(delayMs);
+                            continue;
+                        }
+                        Log.Error($"Operation '{operationName}' failed after {maxRetries} attempts due to persistent server errors.");
+                        throw;
+                    }
+
+                    if (attempt < maxRetries)
+                    {
+                        var delayMs = AdditionRetryDelayMs * attempt / 2;
+                        Log.Warning($"A non-server error occurred. Retrying after a short delay {delayMs / 1000}s...");
+                        await Task.Delay(delayMs);
+                        continue;
+                    }
+
+                    Log.Error($"Operation '{operationName}' failed definitively after {maxRetries} attempts.");
+                    throw;
+                }
+            }
+        }
+
+        private async Task WatchForErrorsAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    var errorModal = _page.Locator(XPath.ServerErrorModal);
+                    if (await errorModal.IsVisibleAsync())
+                    {
+                        string? errorText = (await errorModal.InnerTextAsync()).ToLower();
+                        Log.Warning($"Warning watcher detected a visible error modal! Text: {errorText.Trim()}");
+
+                        // --- РАСПОЗНАВАНИЕ ТИПА ОШИБКИ ---
+                        if (errorText == "максимальное количество картинок:12")
+                        {
+                            // Выбрасываем специальное исключение для этой ошибки
+                            throw new ExceedImagesLimitException();
+                        }
+                        else if (errorText.Contains("internal server error"))
+                        {
+                            // Выбрасываем исключение для серверной ошибки, требующей повтора
+                            throw new ServerErrorException(errorText);
+                        }
+
+                        // Для всех остальных непредвиденных модальных окон
+                        // throw new UndefinedModalErrorException(errorText);
+                    }
+                    await Task.Delay(500, token);
+                }
+                catch (TaskCanceledException) { break; }
+                catch (Exception) { throw; } // Пробрасываем распознанную ошибку наверх
+            }
+        }
+
+        // --- КАСТОМНЫЕ ИСКЛЮЧЕНИЯ ДЛЯ РАЗНЫХ ТИПОВ ОШИБОК ---
+
+        /// <summary> Ошибка, которую нужно обработать как некритичную и продолжить выполнение. </summary>
+        public sealed class ExceedImagesLimitException() : Exception($"Exceeded the maximum number of images allowed ({BaseProduct.MaxImagesCount}).");
+
+        /// <summary> Серверная ошибка, требующая паузы и повторной попытки. </summary>
+        public sealed class ServerErrorException(string message) : Exception($"Server error modal appeared: {message}");
+
+        /// <summary> Неизвестная ошибка в модальном окне, которая должна остановить операцию. </summary>
+        public sealed class UndefinedModalErrorException(string message) : Exception($"An undefined error modal appeared: {message}");
+    }
+    #endregion
 }

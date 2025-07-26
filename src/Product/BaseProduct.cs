@@ -17,7 +17,7 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
     public const ushort DefaultPrice = 0;
     public const ushort MaxTitleLength = 256;
     public const ushort MaxShortDescriptionLength = 1000;
-    public const ushort MaxImageCount = 13;
+    public const ushort MaxImagesCount = 13;
 
     public static readonly JsonSerializerOptions JsonSerializerOptions = new()
     {
