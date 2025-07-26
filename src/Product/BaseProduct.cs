@@ -117,11 +117,6 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
                 Log.Error($"Failed to generate a valid folder name for the product: {Title}");
                 return false;
             }
-            else if (HasProductIO(TranslitedTitle))
-            {
-                Log.Warning($"Product '{Title}' already exists. Skipping save.");
-                return false;
-            }
 
             Directory.CreateDirectory(ImageFolderPath);
 
