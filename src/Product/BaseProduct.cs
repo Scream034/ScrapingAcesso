@@ -122,7 +122,7 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
 
             var dataToSave = new
             {
-                Title,
+                Title,  
                 URL,
                 Price,
                 Count,
