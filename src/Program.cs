@@ -86,6 +86,7 @@ public static class Program
         aiMenu.AddAction("Generate SEO for all products", actions.GenerateSeoForAllRawProductsAsync);
 
         var testMenu = MenuManager.AddSubMenu("Tests");
+        testMenu.AddAction("Test Single Product Parsing", actions.TestSingleProductParsingAsync);
         testMenu.AddAction("Test AI Generation (Single)", actions.TestAiGenerationAsync);
         testMenu.AddAction("Test AI Generation (Batch)", actions.TestAiBatchGenerationAsync);
         testMenu.AddAction("Run Full E2E Cycle Test", actions.RunFullCycleTestAsync);

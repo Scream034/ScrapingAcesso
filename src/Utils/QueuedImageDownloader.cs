@@ -20,21 +20,19 @@ internal record DownloadJob(string ImageUrl, string DestinationPath);
 /// </summary>
 public static class QueuedImageDownloader
 {
-    public const int LoopDelay = 500;
-    public const int WaitingImagesDelay = 2200;
-
     private static readonly string s_queueFilePath = IOPath.Combine(Constants.Path.Folder.App, "download_queue.json");
-    private static readonly ConcurrentDictionary<string, DownloadJob> s_jobQueue = new();
+    // Используем ConcurrentQueue, так как она идеально подходит для модели "производитель-потребитель".
+    private static readonly ConcurrentQueue<DownloadJob> s_jobQueue = new();
     private static readonly HttpClient s_httpClient = new();
 
     private static CancellationTokenSource? s_cts;
-    private static SemaphoreSlim? s_semaphore;
     private static Task? s_processingTask;
-    private static TaskCompletionSource<bool> s_idleTcs = new();
-    private static uint s_activeDownloads = 0;
+    // TaskCompletionSource для механизма ожидания "покоя" (когда все задачи выполнены).
+    private static TaskCompletionSource<bool> s_idleTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     static QueuedImageDownloader()
     {
+        // Изначально система в "покое".
         s_idleTcs.SetResult(true);
     }
 
@@ -42,15 +40,15 @@ public static class QueuedImageDownloader
     /// Initializes the downloader, loads pending jobs, and starts the background processing.
     /// </summary>
     /// <param name="maxConcurrentDownloads">The maximum number of images to download simultaneously.</param>
-    public static void Initialize(int maxConcurrentDownloads = 5)
+    public static void Initialize(int maxConcurrentDownloads = 8) // Увеличил значение по умолчанию
     {
         Log.Print($"Initializing QueuedImageDownloader with {maxConcurrentDownloads} concurrent downloads.");
         s_cts = new CancellationTokenSource();
-        s_semaphore = new SemaphoreSlim(maxConcurrentDownloads, maxConcurrentDownloads);
 
         LoadQueueFromDisk();
 
-        s_processingTask = Task.Run(() => ProcessQueueAsync(s_cts.Token));
+        // Запускаем главный цикл обработки в фоновом потоке.
+        s_processingTask = Task.Run(() => ProcessQueueInParallelAsync(maxConcurrentDownloads, s_cts.Token));
     }
 
     /// <summary>
@@ -61,8 +59,24 @@ public static class QueuedImageDownloader
         if (s_cts == null || s_processingTask == null) return;
 
         Log.Print("Shutting down QueuedImageDownloader...");
+
+        // Если есть активные задачи, дожидаемся их завершения.
+        if (!s_idleTcs.Task.IsCompleted)
+        {
+            Log.Print("Waiting for active downloads to complete before shutdown...");
+            await WaitForIdleAsync();
+        }
+
         s_cts.Cancel();
-        await s_processingTask; // Wait for the processing loop to finish
+        try
+        {
+            await s_processingTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // Это ожидаемое исключение при отмене.
+        }
+
         SaveQueueToDisk();
         Log.Print("QueuedImageDownloader shut down successfully.");
     }
@@ -70,111 +84,122 @@ public static class QueuedImageDownloader
     /// <summary>
     /// Adds a new image to the download queue and returns the expected local file path.
     /// </summary>
-    /// <param name="imageUrl">The public URL of the image.</param>
-    /// <param name="destinationFolder">The folder where the image should be saved.</param>
-    /// <returns>The predicted full local path for the image file.</returns>
     public static string Enqueue(string imageUrl, string destinationFolder)
     {
         var finalFilePath = GetDeterministicFilePath(imageUrl, destinationFolder);
         var job = new DownloadJob(imageUrl, finalFilePath);
 
-        if (s_jobQueue.TryAdd(imageUrl, job))
+        s_jobQueue.Enqueue(job);
+
+        // Если мы добавили новую работу, а система была в "покое",
+        // нужно "сбросить" событие ожидания, создав новое.
+        if (s_idleTcs.Task.IsCompleted)
         {
-            // Если мы добавили новую работу, а система была в "покое",
-            // нужно создать новую "задачу-событие" для ожидания.
-            if (s_idleTcs.Task.IsCompleted)
-            {
-                s_idleTcs = new TaskCompletionSource<bool>();
-            }
-            Log.Print($"Image enqueued: {imageUrl}");
+            s_idleTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
+        Log.Print($"Image enqueued: {Path.GetFileName(finalFilePath)}");
         return finalFilePath;
     }
 
+    /// <summary>
+    /// Returns a task that completes when the download queue is empty and all active downloads are finished.
+    /// </summary>
     public static Task WaitForIdleAsync()
     {
         return s_idleTcs.Task;
     }
 
-    private static async Task ProcessQueueAsync(CancellationToken token)
+    /// <summary>
+    /// The main background processing loop. It continuously pulls jobs from the queue
+    /// and processes them in parallel, up to the specified limit.
+    /// </summary>
+    private static async Task ProcessQueueInParallelAsync(int maxParallelism, CancellationToken token)
     {
         Log.Print("Image download background task started.");
+        var runningTasks = new List<Task>();
+
         while (!token.IsCancellationRequested)
         {
-            // Если очередь пуста, просто ждем.
-            if (s_jobQueue.IsEmpty)
-            {
-                // Проверяем, не пора ли завершить "задачу-событие".
-                // Это нужно на случай, если последняя задача завершилась, а очередь уже была пуста.
-                if (Interlocked.CompareExchange(ref s_activeDownloads, 0, 0) == 0)
-                {
-                    s_idleTcs.TrySetResult(true);
-                }
+            // Очищаем список завершившихся задач
+            runningTasks.RemoveAll(t => t.IsCompleted);
 
-                await Task.Delay(WaitingImagesDelay, token);
-                continue;
+            // Если есть свободные "слоты" для загрузки и в очереди есть задачи
+            while (runningTasks.Count < maxParallelism && s_jobQueue.TryDequeue(out var job))
+            {
+                // Запускаем задачу и добавляем ее в список активных
+                runningTasks.Add(DownloadAndProcessImageAsync(job, token));
             }
 
-            // Берем снимок задач, чтобы избежать вечного цикла, если задачи добавляются постоянно.
-            var jobsToProcess = s_jobQueue.Keys.ToList();
-
-            foreach (var imageUrl in jobsToProcess)
+            // Если в данный момент нет активных задач и очередь пуста,
+            // значит, мы достигли состояния "покоя".
+            if (runningTasks.Count == 0 && s_jobQueue.IsEmpty)
             {
-                if (token.IsCancellationRequested) break;
-
-                // Если задача все еще в очереди (не была обработана другим потоком)
-                if (s_jobQueue.TryRemove(imageUrl, out var job))
+                s_idleTcs.TrySetResult(true);
+                // Ждем немного, прежде чем снова проверять очередь.
+                await Task.Delay(500, token);
+            }
+            else
+            {
+                // Ждем, пока любая из активных задач не завершится,
+                // чтобы освободить "слот" для следующей.
+                if (runningTasks.Count > 0)
                 {
-                    await s_semaphore!.WaitAsync(token);
-
-                    // Увеличиваем счетчик активных задач
-                    Interlocked.Increment(ref s_activeDownloads);
-
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            if (!File.Exists(job.DestinationPath))
-                            {
-                                await DownloadAndSaveImageAsync(job);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Log.Error($"Failed to process download job for {job.ImageUrl}. Error: {ex.Message}");
-                            // Возвращаем в очередь при ошибке для повторной попытки
-                            s_jobQueue.TryAdd(job.ImageUrl, job);
-                        }
-                        finally
-                        {
-                            s_semaphore.Release();
-                            // Уменьшаем счетчик и проверяем, не стали ли мы "в покое"
-                            if (Interlocked.Decrement(ref s_activeDownloads) == 0 && s_jobQueue.IsEmpty)
-                            {
-                                s_idleTcs.TrySetResult(true);
-                            }
-                        }
-                    }, token);
+                    await Task.WhenAny(runningTasks);
                 }
             }
-            await Task.Delay(LoopDelay, token);
         }
+
+        // Дожидаемся всех оставшихся задач после получения сигнала отмены
+        if (runningTasks.Count > 0)
+        {
+            await Task.WhenAll(runningTasks);
+        }
+
         Log.Print("Image download background task stopped.");
     }
 
-    private static async Task DownloadAndSaveImageAsync(DownloadJob job)
+    /// <summary>
+    /// Handles the entire lifecycle of a single download job: download, save, and compress.
+    /// </summary>
+    private static async Task DownloadAndProcessImageAsync(DownloadJob job, CancellationToken token)
     {
-        var imageBytes = await s_httpClient.GetByteArrayAsync(job.ImageUrl);
-        if (imageBytes.Length == 0)
+        try
         {
-            Log.Warning($"Received empty content from URL: {job.ImageUrl}");
-            return;
-        }
+            if (File.Exists(job.DestinationPath))
+            {
+                Log.Print($"Image already exists, skipping: {Path.GetFileName(job.DestinationPath)}");
+                return;
+            }
 
-        Directory.CreateDirectory(IOPath.GetDirectoryName(job.DestinationPath)!);
-        await File.WriteAllBytesAsync(job.DestinationPath, imageBytes);
-        Log.Print($"Image downloaded and saved to {job.DestinationPath}");
+            // Скачивание
+            var imageBytes = await s_httpClient.GetByteArrayAsync(job.ImageUrl, token);
+            if (imageBytes.Length == 0)
+            {
+                Log.Warning($"Received empty content from URL: {job.ImageUrl}");
+                return;
+            }
+
+            // Сохранение
+            Directory.CreateDirectory(IOPath.GetDirectoryName(job.DestinationPath)!);
+            await File.WriteAllBytesAsync(job.DestinationPath, imageBytes, token);
+            Log.Print($"Downloaded: {job.DestinationPath}");
+
+            // Сжатие
+            ImageUtils.CompressImageIfNeeded(job.DestinationPath);
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Warning($"Download canceled for: {job.ImageUrl}");
+            // Возвращаем в очередь при отмене, чтобы задача не потерялась
+            s_jobQueue.Enqueue(job);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to process job for {job.ImageUrl}. Error: {ex.Message}. Re-enqueuing.");
+            // Возвращаем в очередь при ошибке для повторной попытки
+            s_jobQueue.Enqueue(job);
+        }
     }
 
     /// <summary>
@@ -207,7 +232,7 @@ public static class QueuedImageDownloader
             {
                 foreach (var job in jobs)
                 {
-                    s_jobQueue.TryAdd(job.ImageUrl, job);
+                    s_jobQueue.Enqueue(job);
                 }
             }
             Log.Print($"Loaded {s_jobQueue.Count} pending image downloads from disk.");
@@ -222,7 +247,7 @@ public static class QueuedImageDownloader
     {
         try
         {
-            var jobs = s_jobQueue.Values.ToList();
+            var jobs = s_jobQueue.ToList();
             var json = JsonSerializer.Serialize(jobs, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(s_queueFilePath, json);
             Log.Print($"Saved {jobs.Count} pending image downloads to disk.");

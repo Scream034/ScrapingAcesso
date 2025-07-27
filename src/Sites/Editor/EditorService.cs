@@ -248,7 +248,8 @@ public sealed class EditorService(string url) : BaseSiteParser
         Log.Print("Final step: Clicking 'Save' button.");
         await Page!.Locator(XPath.SaveProductButton).ClickAsync();
         // Ожидаем возврата на главную страницу редактора, это и есть подтверждение сохранения
-        await Page.Locator(XPath.SearchInCatalog).WaitForAsync(new() { Timeout = 90_000 });
+        Log.Print("Waiting for return to the main editor page...");
+        await Page.Locator(XPath.SearchInCatalog).WaitForAsync(new() { Timeout = 100_000 });
         Log.Print("Product saved, returned to the main editor page.");
     }
 

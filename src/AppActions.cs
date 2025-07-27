@@ -638,6 +638,68 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
     }
 
     /// <summary>
+    /// Запускает тест парсинга одного продукта Stem по указанному URL.
+    /// </summary>
+    public async Task TestSingleProductParsingAsync()
+    {
+        Log.Print("--- Starting Single Stem Product Parsing Test ---");
+
+        // 1. Получаем URL от пользователя
+        Log.Print("Enter the full URL of the Stem product to parse:");
+        string? productUrl = Console.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(productUrl) || !Uri.IsWellFormedUriString(productUrl, UriKind.Absolute))
+        {
+            Log.Error("Invalid or empty URL. Operation canceled.");
+            return;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        Log.Print($"Starting to parse product from: {productUrl}");
+
+        // 2. Создаем экземпляр парсера для одного продукта
+        var productParser = new WebStemProduct(new Uri(productUrl), _settingsManager);
+        bool success = false;
+
+        try
+        {
+            // 3. Запускаем парсинг
+            success = await productParser.ParseAsync(_scraper);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"An unhandled exception occurred during parsing: {ex.Message}");
+            success = false;
+        }
+        finally
+        {
+            // Важно всегда закрывать страницу, чтобы не оставлять "висящих" процессов
+            await productParser.CloseAsync();
+        }
+
+        stopwatch.Stop();
+        Log.Print($"--- Parsing test finished in {stopwatch.Elapsed.TotalSeconds:F2} seconds. ---");
+
+        // 4. Выводим результат
+        if (success)
+        {
+            Log.Print("[SUCCESS] Product parsed successfully!");
+            Log.Print("--- Parsed Data ---");
+            Log.Print($"Title: {productParser.Title}");
+            Log.Print($"Price: {productParser.Price}");
+            Log.Print($"Description Length: {productParser.Description?.Length ?? 0} characters");
+            Log.Print($"Attributes Found: {productParser.Attributes.Count}");
+            Log.Print($"Images Found (and enqueued for download): {productParser.AllImages?.Count ?? 0}");
+            Log.Print($"Data saved to folder: {productParser.FolderPath}");
+        }
+        else
+        {
+            Log.Error("[FAILURE] Failed to parse the product. Check logs above for details.");
+        }
+        Log.Print("---------------------");
+    }
+
+    /// <summary>
     /// Prompts the user for input with an optional default value.
     /// If the user presses Enter without input, returns the default value.
     /// </summary>

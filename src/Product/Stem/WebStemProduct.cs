@@ -8,7 +8,6 @@ using ScraperAcesso.Components;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Components.Settings;
 using ScraperAcesso.Utils;
-using ScraperAcesso.Sites.Editor;
 
 public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) : WebProduct(url)
 {
@@ -23,8 +22,6 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
         public const string AttributeName = "//div[contains(@class, 'properties')]//div[contains(@class, 'js-prop-title')]";
         public const string AttributeValue = "//div[contains(@class, 'properties')]//div[contains(@class, 'js-prop-value')]";
     }
-
-    private static readonly HttpClient _httpClient = new();
 
     public override async Task<bool> ParseAsync(ChromiumScraper scraper)
     {
@@ -44,6 +41,7 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
 
         Title = await GetTitleAsync(Page);
 
+        // Проверяем заголовок до того, как тратить время на остальной парсинг
         if (string.IsNullOrWhiteSpace(Title))
         {
             Log.Error($"Failed to parse product title, it is empty. URL: {URL}");
@@ -58,7 +56,6 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
         var descriptionTask = GetDescriptionAsync(Page);
         var priceTask = GetPriceAsync(Page);
         var attributesTask = GetAttributesAsync(Page);
-        // Этот метод теперь будет фильтровать изображения по размеру ДО скачивания
         var imageUrlsTask = EnqueueImagesForDownloadAsync(Page, ImageFolderPath);
 
         Description = await descriptionTask;
@@ -79,6 +76,7 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
             return false;
         }
 
+        // Auto SEO generation in background
         if (_settingsManager.GetAutoSeoEnabled() && !string.IsNullOrWhiteSpace(Description))
         {
             Log.Print($"Auto-SEO is enabled. Generating content for '{URL}'...");
@@ -157,7 +155,6 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
     /// Finds image URLs on the page and enqueues them for background download.
     /// </summary>
     /// <returns>A list of predicted local file paths for the enqueued images.</returns>
-    /// <summary>
     public static async Task<List<string>> EnqueueImagesForDownloadAsync(IPage page, string destinationFolder)
     {
         var imageUrls = await GetImageUrlsAsync(page);
@@ -172,38 +169,11 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
         var enqueuedFilePaths = new List<string>();
         foreach (var url in imageUrls)
         {
-            try
-            {
-                // Отправляем HEAD-запрос, чтобы получить только заголовки, а не весь файл
-                using var request = new HttpRequestMessage(HttpMethod.Head, new Uri(url));
-                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-
-                response.EnsureSuccessStatusCode(); // Убеждаемся, что запрос прошел успешно (код 2xx)
-
-                // Проверяем заголовок Content-Length
-                if (response.Content.Headers.ContentLength is long contentLength && contentLength > EditorService.MaxImageSizeInBytes)
-                {
-                    // Если размер файла превышает лимит, логируем и пропускаем его
-                    Log.Warning($"Image '{Path.GetFileName(url)}' is too large ({contentLength / 1024:N0} KB). Skipping download.");
-                    continue; // Переходим к следующему URL
-                }
-
-                // Если размер в норме (или неизвестен), ставим в очередь на скачивание
-                var predictedPath = QueuedImageDownloader.Enqueue(url, destinationFolder);
-                enqueuedFilePaths.Add(predictedPath);
-            }
-            catch (Exception ex)
-            {
-                // Если не удалось проверить размер (например, сервер не отвечает или не отдает Content-Length),
-                // мы на всякий случай все равно ставим его в очередь.
-                // Альтернатива - пропустить, но так надежнее.
-                Log.Warning($"Could not pre-check size for image '{Path.GetFileName(url)}'. Enqueuing anyway. Reason: {ex.Message}");
-                var predictedPath = QueuedImageDownloader.Enqueue(url, destinationFolder);
-                enqueuedFilePaths.Add(predictedPath);
-            }
+            var predictedPath = QueuedImageDownloader.Enqueue(url, destinationFolder);
+            enqueuedFilePaths.Add(predictedPath);
         }
 
-        Log.Print($"Enqueued {enqueuedFilePaths.Count} images for download after size pre-check.");
+        Log.Print($"Enqueued {enqueuedFilePaths.Count} images for download.");
         return enqueuedFilePaths;
     }
 }
