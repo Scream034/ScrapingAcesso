@@ -1,6 +1,8 @@
 namespace ScraperAcesso.Product;
 
+using ScraperAcesso.Ai;
 using ScraperAcesso.Components.Log;
+using ScraperAcesso.Components.Settings;
 using ScraperAcesso.Utils;
 using System.Collections.Concurrent;
 using System.Text;
@@ -41,50 +43,100 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
     public List<string>? AllImages { get; set; }
     public string? PreviewImage => AllImages?.FirstOrDefault();
 
-    /// <summary>
-    /// Проверяет, был ли продукт отмечен как "добавленный" путем проверки наличия файла-маркера.
-    /// Это очень быстрая операция файловой системы.
-    /// </summary>
-    public bool IsAdded => File.Exists(AddedMarkerFilePath);
-
     public string FolderPath => IOPath.Combine(Constants.Path.Folder.Products, TranslitedTitle ?? "UNKNOWN");
     public string DataFilePath => IOPath.Combine(FolderPath, Constants.Path.Name.File.ProductData);
     public string ImageFolderPath => IOPath.Combine(FolderPath, Constants.Path.Name.Folder.ProductImages);
     public string AddedMarkerFilePath => IOPath.Combine(FolderPath, Constants.Path.Name.File.ProductMarkerAdded);
+    public string ValidationErrorFilePath => IOPath.Combine(FolderPath, "validation_error.json");
+
+    /// <summary>
+    /// Проверяет, был ли продукт отмечен как "добавленный".
+    /// </summary>
+    public bool IsAdded => File.Exists(AddedMarkerFilePath);
+
+    /// <summary>
+    /// Проверяет, был ли продукт отмечен как "невалидный" из-за ошибок данных.
+    /// </summary>
+    public bool IsInvalid => File.Exists(ValidationErrorFilePath);
 
     /// <summary>
     /// Асинхронно помечает продукт как "добавленный", создавая пустой файл-маркер.
     /// </summary>
-    public async Task MarkAsAddedAsync()
+    public async Task<bool> MarkAsAddedAsync()
     {
         try
         {
             // Создаем файл. Содержимое не важно, важно его наличие.
             await File.WriteAllTextAsync(AddedMarkerFilePath, DateTime.UtcNow.ToString("o"));
             Log.Print($"Product '{Title}' marked as added.");
+            return true;
         }
         catch (Exception ex)
         {
             Log.Error($"Failed to mark product '{Title}' as added. Error: {ex.Message}");
         }
+
+        return false;
     }
 
     /// <summary>
     /// Асинхронно снимает с продукта отметку "добавленный", удаляя файл-маркер.
     /// </summary>
-    public void UnmarkAsAdded()
+    public bool UnmarkAsAdded()
     {
-        if (!File.Exists(AddedMarkerFilePath)) return;
+        if (!File.Exists(AddedMarkerFilePath)) return true;
 
         try
         {
             File.Delete(AddedMarkerFilePath);
             Log.Print($"Product '{Title}' unmarked as added.");
+            return true;
         }
         catch (Exception ex)
         {
             Log.Error($"Failed to unmark product '{Title}'. Error: {ex.Message}");
         }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Асинхронно помечает продукт как невалидный, создавая файл с деталями ошибок.
+    /// </summary>
+    public async Task<bool> MarkAsInvalidAsync(List<ValidationError> errors)
+    {
+        try
+        {
+            var errorInfo = new ValidationErrorFile(DateTime.UtcNow, errors);
+            var jsonContent = JsonSerializer.Serialize(errorInfo, JsonSerializerOptions);
+            await File.WriteAllTextAsync(ValidationErrorFilePath, jsonContent, Encoding.UTF8);
+            Log.Error($"Product '{Title}' marked as INVALID. Details saved to '{ValidationErrorFilePath}'.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"CRITICAL: Failed to mark product '{Title}' as invalid. Error: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    public bool UnmarkAsInvalid()
+    {
+        if (!File.Exists(ValidationErrorFilePath)) return true;
+
+        try
+        {
+            File.Delete(ValidationErrorFilePath);
+            Log.Print($"Product '{Title}' unmarked as invalid.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to unmark product '{Title}'. Error: {ex.Message}");
+        }
+
+        return false;
     }
 
     public string GetAttributesAsString(string separator = " — ")
@@ -122,7 +174,7 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
 
             var dataToSave = new
             {
-                Title,  
+                Title,
                 URL,
                 Price,
                 Count,
@@ -183,14 +235,22 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
             if (addedStatus.HasValue)
             {
                 var markerPath = IOPath.Combine(dir, Constants.Path.Name.File.ProductMarkerAdded);
-                // ...проверяем наличие файла-маркера (быстрая операция)...
                 bool isActuallyAdded = File.Exists(markerPath);
 
-                // ...и если статус не совпадает с желаемым, пропускаем эту папку,
-                // не тратя время на чтение и парсинг JSON.
                 if (isActuallyAdded != addedStatus.Value)
                 {
-                    continue;
+                    continue; // Пропускаем, если статус "добавлен" не совпадает
+                }
+
+                // --- НОВАЯ ЛОГИКА ---
+                // Если мы ищем НЕ добавленные (pending), то также надо исключить невалидные.
+                if (addedStatus.Value == false)
+                {
+                    var invalidMarkerPath = IOPath.Combine(dir, "validation_error.json");
+                    if (File.Exists(invalidMarkerPath))
+                    {
+                        continue; // Пропускаем невалидные товары
+                    }
                 }
             }
 
@@ -212,6 +272,45 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
 
         Log.Print($"Successfully loaded {loadedProducts.Count} products.");
         return [.. loadedProducts];
+    }
+
+    /// <summary>
+    /// Загружает все продукты, которые были помечены как невалидные, вместе с информацией об их ошибках.
+    /// </summary>
+    /// <returns>Словарь, где ключ - невалидный продукт, а значение - информация об ошибках.</returns>
+    public static async Task<Dictionary<BaseProduct, ValidationErrorFile>> LoadInvalidProductsAsync()
+    {
+        if (!Directory.Exists(Constants.Path.Folder.Products)) return [];
+
+        var invalidProducts = new ConcurrentDictionary<BaseProduct, ValidationErrorFile>();
+        var productDirectories = Directory.GetDirectories(Constants.Path.Folder.Products);
+
+        await Parallel.ForEachAsync(productDirectories, async (dir, token) =>
+        {
+            var errorFilePath = IOPath.Combine(dir, "validation_error.json");
+            if (!File.Exists(errorFilePath)) return;
+
+            try
+            {
+                var product = await LoadFromDirectoryAsync(dir);
+                if (product == null) return;
+
+                var jsonContent = await File.ReadAllTextAsync(errorFilePath, token);
+                var errorInfo = JsonSerializer.Deserialize<ValidationErrorFile>(jsonContent, JsonSerializerOptions);
+
+                if (errorInfo != null)
+                {
+                    invalidProducts.TryAdd(product, errorInfo);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Failed to load invalid product info from '{dir}'. Reason: {ex.Message}");
+            }
+        });
+
+        Log.Print($"Found {invalidProducts.Count} invalid products.");
+        return new Dictionary<BaseProduct, ValidationErrorFile>(invalidProducts);
     }
 
     /// <summary>
@@ -244,7 +343,7 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
 
             if (tempProductData == null || string.IsNullOrWhiteSpace(tempProductData.Title) || string.IsNullOrWhiteSpace(tempProductData.URL))
             {
-                Log.Warning($"Failed to deserialize or product title/URL is empty in '{dataFilePath}'.");
+                Log.Warning($"Failed to deserialize or product title/URL is empty '{dataFilePath}'.");
                 return null;
             }
 
@@ -259,7 +358,7 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
         }
         catch (JsonException jsonEx)
         {
-            Log.Error($"Failed to parse JSON in '{dataFilePath}'. Error: {jsonEx.Message}");
+            Log.Error($"Failed to parse JSON '{dataFilePath}'. Error: {jsonEx.Message}");
             return null;
         }
         catch (Exception ex)
@@ -267,6 +366,18 @@ public class BaseProduct(in string title, in Uri url, in int price = BaseProduct
             Log.Error($"An unexpected error occurred while loading product from '{dataFilePath}'. Error: {ex.Message}");
             return null;
         }
+    }
+
+    public async Task<bool> EnqueueGenerateAiDataAsync()
+    {
+        if (SettingsManager.Instance.GetAutoSeoEnabled() && !string.IsNullOrWhiteSpace(Description))
+        {
+            Log.Print($"Auto-SEO is enabled. Generating content for '{URL}'...");
+            await GeminiBatchProcessor.EnqueueAsync(this);
+            return true;
+        }
+
+        return false;
     }
 
     // Вспомогательный класс для десериализации.

@@ -15,27 +15,26 @@ using ScraperAcesso.Sites.Editor;
 /// Handles application actions such as authorization and product parsing.
 /// Provides methods for user interaction and manages settings.
 /// </summary>
-public sealed class AppActions(ChromiumScraper scraper, SettingsManager settingsManager)
+public sealed class AppActions(ChromiumScraper scraper)
 {
     public const int GemeniAPIDelay = 1400;
 
     private readonly ChromiumScraper _scraper = scraper;
-    private readonly SettingsManager _settingsManager = settingsManager;
 
     public async Task PerformAuthorizationAsync()
     {
         Log.Print("--- Authorization ---");
 
         // Get user input for authorization
-        var url = GetUserInput("Input URL", _settingsManager.GetDecryptedAuthUrl());
-        var username = GetUserInput("Input Username", _settingsManager.GetDecryptedUsername());
+        var url = GetUserInput("Input URL", SettingsManager.Instance.GetDecryptedAuthUrl());
+        var username = GetUserInput("Input Username", SettingsManager.Instance.GetDecryptedUsername());
         var password = GetUserInput("Input Password", isPassword: true);
 
         if (string.IsNullOrWhiteSpace(password))
         {
             // if user did not provide a password, try to use the last saved one
             Log.Print("No password provided. Trying to use last saved password.");
-            password = _settingsManager.GetDecryptedPassword();
+            password = SettingsManager.Instance.GetDecryptedPassword();
             if (!string.IsNullOrEmpty(password))
             {
                 Log.Print($"Using last saved password.");
@@ -57,7 +56,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         {
             Log.Print("Authorization successful.");
             // Сохраняем новые данные после успешной авторизации
-            _settingsManager.UpdateAndSaveAuthInfo(url, username, password);
+            SettingsManager.Instance.UpdateAndSaveAuthInfo(url, username, password);
         }
         else
         {
@@ -66,7 +65,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
             var saveResponse = Console.ReadLine()?.Trim().ToLower();
             if (saveResponse == "y" || saveResponse == "yes")
             {
-                _settingsManager.UpdateAndSaveAuthInfo(url, username, password);
+                SettingsManager.Instance.UpdateAndSaveAuthInfo(url, username, password);
                 Log.Print("Credentials saved for future use.");
             }
             else
@@ -91,18 +90,17 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         }
 
         Log.Print("--- Start parsing Stem products ---");
-        var stemCatalogParser = new StemCatalogParser(new(url), productUrl => new WebStemProduct(productUrl, _settingsManager));
+        var stemCatalogParser = new StemCatalogParser(new(url), productUrl => new WebStemProduct(productUrl, SettingsManager.Instance));
 
-        if (_settingsManager.GetAutoSeoEnabled())
+        if (SettingsManager.Instance.GetAutoSeoEnabled())
         {
-            var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+            var apiKey = SettingsManager.Instance.GetDecryptedGeminiApiKey();
             if (!GeminiService.Initialize(apiKey))
             {
                 Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
-                _settingsManager.SetAutoSeoEnabled(false);
+                SettingsManager.Instance.SetAutoSeoEnabled(false);
                 return;
             }
-            GeminiBatchProcessor.Initialize();
         }
 
         var products = await stemCatalogParser.ParseAsync(_scraper);
@@ -123,19 +121,19 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
     /// </summary>
     public Task ToggleAutoSeoGeneration()
     {
-        var currentState = _settingsManager.GetAutoSeoEnabled();
+        var currentState = SettingsManager.Instance.GetAutoSeoEnabled();
         var newState = !currentState;
-        _settingsManager.SetAutoSeoEnabled(newState);
+        SettingsManager.Instance.SetAutoSeoEnabled(newState);
         Log.Print($"Automatic SEO generation on product parse is now {(newState ? "ENABLED" : "DISABLED")}.");
 
         // check for gemeni api
         if (newState)
         {
-            var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+            var apiKey = SettingsManager.Instance.GetDecryptedGeminiApiKey();
             if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
             {
                 Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
-                _settingsManager.SetAutoSeoEnabled(false);
+                SettingsManager.Instance.SetAutoSeoEnabled(false);
                 return Task.CompletedTask;
             }
         }
@@ -147,7 +145,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
     {
         Log.Print("--- Start SEO Generation for Raw Products ---");
 
-        var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+        var apiKey = SettingsManager.Instance.GetDecryptedGeminiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
         {
             Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
@@ -188,7 +186,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
     public Task ConfigureGeminiApiKey()
     {
         Log.Print("--- Configure Gemini API Key ---");
-        var currentKey = _settingsManager.GetDecryptedGeminiApiKey();
+        var currentKey = SettingsManager.Instance.GetDecryptedGeminiApiKey();
 
         if (!string.IsNullOrEmpty(currentKey))
         {
@@ -206,7 +204,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
 
         if (GeminiService.Initialize(newKey))
         {
-            _settingsManager.UpdateAndSaveGeminiApiKey(newKey);
+            SettingsManager.Instance.UpdateAndSaveGeminiApiKey(newKey);
             Log.Print("Gemini API key successfully verified and saved.");
         }
         else
@@ -225,7 +223,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         // --- Фаза 1: Сбор данных от пользователя и подготовка ---
         Log.Print("--- [Phase 1: Preparation] ---");
 
-        var authUrl = _settingsManager.GetDecryptedAuthUrl();
+        var authUrl = SettingsManager.Instance.GetDecryptedAuthUrl();
         var editorUrl = GetUserInput("Enter the editor URL", authUrl);
         if (string.IsNullOrWhiteSpace(editorUrl))
         {
@@ -260,8 +258,8 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
 
         // --- Фаза 2: Автоматическая авторизация ---
         Log.Print("--- [Phase 2: Automatic Authorization] ---");
-        var username = _settingsManager.GetDecryptedUsername();
-        var password = _settingsManager.GetDecryptedPassword();
+        var username = SettingsManager.Instance.GetDecryptedUsername();
+        var password = SettingsManager.Instance.GetDecryptedPassword();
 
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
         {
@@ -308,14 +306,13 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         Log.Print("--- Starting AI Generation Test ---");
 
         // 1. Проверяем, что API ключ настроен
-        var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+        var apiKey = SettingsManager.Instance.GetDecryptedGeminiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
         {
             Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
             return;
         }
 
-        GeminiBatchProcessor.Initialize();
 
         // 2. Создаем тестовый продукт с заранее заданными данными
         var testProduct = new BaseProduct(
@@ -359,14 +356,13 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         Log.Print("--- Starting AI Batch Generation Test ---");
 
         // 1. Проверяем, что API ключ настроен
-        var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+        var apiKey = SettingsManager.Instance.GetDecryptedGeminiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
         {
             Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
             return;
         }
 
-        GeminiBatchProcessor.Initialize();
 
         // 2. Создаем несколько тестовых продуктов
         var testProducts = new List<BaseProduct>
@@ -400,7 +396,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         Log.Print("Enqueuing products for batch processing...");
         foreach (var product in testProducts)
         {
-            GeminiBatchProcessor.Enqueue(product);
+            await GeminiBatchProcessor.EnqueueAsync(product);
         }
 
         // 4. Ждем, пока Batch Processor выполнит свою работу.
@@ -464,20 +460,19 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
             productCount = 2;
         }
 
-        var apiKey = _settingsManager.GetDecryptedGeminiApiKey();
+        var apiKey = SettingsManager.Instance.GetDecryptedGeminiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey) || !GeminiService.Initialize(apiKey))
         {
             Log.Error("Gemini API key is not configured or invalid. Please set it up first via the main menu.");
             return;
         }
 
-        GeminiBatchProcessor.Initialize();
 
         // --- Фаза 1: Парсинг и обработка ---
         Log.Print($"--- [Phase 1: Parsing] Starting to parse {productCount} products from catalog... ---");
         var stopwatch = Stopwatch.StartNew();
 
-        var stemCatalogParser = new StemCatalogParser(new(catalogUrl), productUrl => new WebStemProduct(productUrl, _settingsManager), productCount);
+        var stemCatalogParser = new StemCatalogParser(new(catalogUrl), productUrl => new WebStemProduct(productUrl, SettingsManager.Instance), productCount);
         var parsedProducts = await stemCatalogParser.ParseAsync(_scraper);
 
         stopwatch.Stop();
@@ -510,7 +505,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         string? editorUrl = Console.ReadLine();
         if (string.IsNullOrWhiteSpace(editorUrl))
         {
-            editorUrl = _settingsManager.GetDecryptedAuthUrl();
+            editorUrl = SettingsManager.Instance.GetDecryptedAuthUrl();
             Log.Warning($"Dont set editor url, use auth url: {editorUrl}");
         }
 
@@ -570,9 +565,9 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
 
         // --- Фаза 2: Авторизация ---
         Log.Print("--- [Phase 2: Authorization] Attempting to log in... ---");
-        var authUrl = _settingsManager.GetDecryptedAuthUrl();
-        var username = _settingsManager.GetDecryptedUsername();
-        var password = _settingsManager.GetDecryptedPassword();
+        var authUrl = SettingsManager.Instance.GetDecryptedAuthUrl();
+        var username = SettingsManager.Instance.GetDecryptedUsername();
+        var password = SettingsManager.Instance.GetDecryptedPassword();
 
         if (string.IsNullOrWhiteSpace(authUrl) || string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
         {
@@ -658,7 +653,7 @@ public sealed class AppActions(ChromiumScraper scraper, SettingsManager settings
         Log.Print($"Starting to parse product from: {productUrl}");
 
         // 2. Создаем экземпляр парсера для одного продукта
-        var productParser = new WebStemProduct(new Uri(productUrl), _settingsManager);
+        var productParser = new WebStemProduct(new Uri(productUrl), SettingsManager.Instance);
         bool success = false;
 
         try

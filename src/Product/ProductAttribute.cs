@@ -5,5 +5,5 @@ namespace ScraperAcesso.Product
     /// </summary>
     /// <param name="Name">The name of the attribute (e.g., "Color", "Material").</param>
     /// <param name="Value">The value of the attribute (e.g., "Red", "Cotton").</param>
-    public record ProductAttribute(string Name, string Value);
+    public sealed record ProductAttribute(string Name, string Value);
 }

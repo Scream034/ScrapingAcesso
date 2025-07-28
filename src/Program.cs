@@ -18,7 +18,7 @@ public static class Program
         QueuedImageDownloader.Initialize();
 
         Log.Print($"Starting {Constants.AppName} v2.5...");
-
+    
         // Handle Ctrl+C (graceful shutdown)
         Console.CancelKeyPress += static async (_, eventArgs) =>
         {
@@ -48,11 +48,10 @@ public static class Program
     {
         // 1. Initialize services
         Log.Print("Initializing services...");
-        var settingsManager = new SettingsManager();
-        settingsManager.Load();
+        SettingsManager.Instance.Load();
 
         await using var scraper = await ChromiumScraper.CreateAsync();
-        var appActions = new AppActions(scraper, settingsManager);
+        var appActions = new AppActions(scraper);
 
         // 2. Configure browser contexts
         await ConfigureBrowserContexts(scraper);

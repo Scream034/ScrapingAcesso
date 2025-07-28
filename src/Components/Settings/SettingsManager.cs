@@ -10,6 +10,8 @@ using ScraperAcesso.Components.Log;
 /// </summary>
 public sealed class SettingsManager
 {
+    public readonly static SettingsManager Instance = new();
+
     private readonly string _settingsFilePath;
     private AppSettingsModel _settings;
 

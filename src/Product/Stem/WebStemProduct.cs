@@ -77,12 +77,7 @@ public sealed class WebStemProduct(in Uri url, SettingsManager settingsManager) 
         }
 
         // Auto SEO generation in background
-        if (_settingsManager.GetAutoSeoEnabled() && !string.IsNullOrWhiteSpace(Description))
-        {
-            Log.Print($"Auto-SEO is enabled. Generating content for '{URL}'...");
-            GeminiBatchProcessor.Enqueue(this);
-        }
-
+        _ = EnqueueGenerateAiDataAsync();
         _ = SaveAsync();
 
         return true;

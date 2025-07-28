@@ -24,7 +24,7 @@ public sealed class ChromiumScraper : IAsyncDisposable
 	/// </summary>
 	public static BrowserTypeLaunchOptions DefaultDriverOptions { get; } = new()
 	{
-		Args = new[] { "--disable-web-security", "--disable-features=IsolateOrigins,site-per-process", "--incognito" },
+		Args = ["--disable-web-security", "--disable-features=IsolateOrigins,site-per-process", "--incognito"],
 		Headless = false,
 		ChromiumSandbox = true,
 		// Рекомендуется указывать Timeout, чтобы запуск не зависал навечно
@@ -36,13 +36,13 @@ public sealed class ChromiumScraper : IAsyncDisposable
 	/// </summary>
 	public static BrowserNewContextOptions DefaultContextOptions { get; } = new()
 	{
-		UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+		UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 YaBrowser/25.6.0.0 Safari/537.36",
 		IgnoreHTTPSErrors = true,
-		ViewportSize = new() { Width = 1280, Height = 720 },
+		ViewportSize = new() { Width = 1366, Height = 768 },
 		AcceptDownloads = true,
 		ReducedMotion = ReducedMotion.Reduce,
 		Geolocation = new() { Longitude = 60.6103F, Latitude = 56.8389F }, // Екатеринбург
-		Permissions = new[] { "geolocation" },
+		Permissions = ["geolocation"],
 		TimezoneId = "Asia/Yekaterinburg", // Урал
 		Locale = "ru-RU",
 		ColorScheme = ColorScheme.Dark,

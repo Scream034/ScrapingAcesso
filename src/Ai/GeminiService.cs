@@ -2,6 +2,7 @@ namespace ScraperAcesso.Ai;
 
 using GenerativeAI;
 using ScraperAcesso.Components.Log;
+using ScraperAcesso.Components.Settings;
 using ScraperAcesso.Product;
 using System.Text;
 
@@ -35,6 +36,7 @@ public static class GeminiService
         s_modelManager = new GeminiModelManager();
         s_modelManager.Initialize();
 
+        Log.Print("Gemini Service initialized.");
         return true;
     }
 
@@ -56,8 +58,14 @@ public static class GeminiService
 
         if (s_modelManager == null || string.IsNullOrWhiteSpace(s_apiKey))
         {
-            Log.Error("Gemini Service is not initialized.");
-            return false;
+            Log.Print("Gemini Service is not initialized. Trying to initialize...");
+            Initialize(SettingsManager.Instance.GetDecryptedGeminiApiKey());
+
+            if (s_modelManager == null || string.IsNullOrWhiteSpace(s_apiKey))
+            {
+                Log.Error($"Failed to initialize Gemini Service with {s_apiKey}");
+                return false;
+            }
         }
 
         await s_requestGate.WaitAsync();
@@ -144,12 +152,12 @@ public static class GeminiService
 
         sb.AppendLine("\n--- ЗАДАНИЕ ---");
         sb.AppendLine("Для КАЖДОГО товара выше сгенерируй ТРИ блока текста:");
-        sb.AppendLine($"1.  **Краткое описание:** Рерайт. Длина: до {BaseProduct.MaxShortDescriptionLength} симв.");
+        sb.AppendLine($"1.  **Краткое описание:** Рерайт. Длина: до {BaseProduct.MaxShortDescriptionLength - 100} симв.");
         sb.AppendLine($"2.  **SEO-предложение:** Одно предложение. Длина: до {SEOProductInfo.MaxSeoSentenceLength} симв.");
         sb.AppendLine($"3.  **Ключевые слова:** 5-7 слов через запятую. Длина: до {SEOProductInfo.MaxKeywordsLength} симв.");
 
         sb.AppendLine("\n--- ТРЕБОВАНИЯ К ФОРМАТУ ОТВЕТА ---");
-        sb.AppendLine("Твой ответ должен содержать ТОЛЬКО сгенерированный контент для каждого товара.");
+        sb.AppendLine("Твой ответ должен содержать ТОЛЬКО сгенерированный контент для каждого товара. НИКАКИХ СПЕЦИАЛЬНЫХ СИМВОЛОВ.");
         sb.AppendLine("Ответ для каждого товара должен начинаться с его ID и следовать СТРОГОЙ структуре.");
         sb.AppendLine("Разделяй полные ответы для разных товаров строкой '%%%===ITEM_SEPARATOR===%%%'.");
         sb.AppendLine("Пример правильной структуры ответа для ДВУХ товаров:");

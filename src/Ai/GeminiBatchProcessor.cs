@@ -3,6 +3,7 @@ namespace ScraperAcesso.Ai;
 using ScraperAcesso.Components.Log;
 using ScraperAcesso.Product;
 using System.Collections.Concurrent;
+using System.Threading.Tasks;
 
 public static class GeminiBatchProcessor
 {
@@ -12,7 +13,7 @@ public static class GeminiBatchProcessor
 
     // Настройки батчинга
     private const int BatchSize = 3; // Сколько товаров в одном запросе
-    private static readonly TimeSpan s_dispatchInterval = TimeSpan.FromSeconds(10); // Как часто проверять очередь
+    private static readonly TimeSpan s_dispatchInterval = TimeSpan.FromSeconds(8); // Как часто проверять очередь
     private static TaskCompletionSource<bool> s_idleTcs = new();
 
     static GeminiBatchProcessor()
@@ -20,10 +21,11 @@ public static class GeminiBatchProcessor
         s_idleTcs.SetResult(true);
     }
 
-    public static void Initialize()
+    private static void Initialize()
     {
         Log.Print("Initializing Gemini Batch Processor...");
         s_processingTask = Task.Run(() => ProcessingLoopAsync(s_cts.Token));
+        Log.Print("Initialization complete.");
     }
 
     public static async Task ShutdownAsync()
@@ -42,9 +44,20 @@ public static class GeminiBatchProcessor
     /// <summary>
     /// Adds a product to the processing queue.
     /// </summary>
-    public static void Enqueue(BaseProduct product)
+    public static async Task EnqueueAsync(BaseProduct product)
     {
-        if (product.SEO != null || string.IsNullOrWhiteSpace(product.Description)) return;
+        if (string.IsNullOrWhiteSpace(product.Description))
+        {
+            Log.Warning($"Product '{product.Title}' has no description. Skipping SEO generation.");
+            return;
+        }
+        else if (s_processingTask == null)
+        {
+            Log.Print("Batch processing background task not started. Starting now...");
+            Initialize();
+            await Task.Delay(s_dispatchInterval.Add(s_dispatchInterval / 4)); // For init
+            Log.Print("Batch processing background task started.");
+        }
 
         s_productQueue.Enqueue(product);
 
